@@ -34,6 +34,9 @@ func makeProviderCmd() *cobra.Command {
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
 
+		handlers.InitCheckpointModule()
+		handlers.InitMountModule()
+
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
 		if flagErr != nil {
 			return flagErr
@@ -93,9 +96,10 @@ func makeProviderCmd() *cobra.Command {
 		}
 
 		bootstrapHandlers := types.FaaSHandlers{
-			FunctionProxy:   proxy.NewHandlerFunc(*config, invokeResolver),
-			DeleteFunction:  handlers.MakeDeleteHandler(client, cni),
-			DeployFunction:  handlers.MakeDeployHandler(client, cni, baseUserSecretsPath, alwaysPull),
+			FunctionProxy:  handlers.HookInvokeProxy(proxy.NewHandlerFunc(*config, invokeResolver)),
+			DeleteFunction: handlers.MakeDeleteHandler(client, cni),
+			DeployFunction: handlers.MakeDeployHandler(client, cni, baseUserSecretsPath,
+				providerConfig.CheckpointDir, alwaysPull),
 			FunctionLister:  handlers.MakeReadHandler(client),
 			FunctionStatus:  handlers.MakeReplicaReaderHandler(client),
 			ScaleFunction:   handlers.MakeReplicaUpdateHandler(client, cni),
@@ -106,6 +110,7 @@ func makeProviderCmd() *cobra.Command {
 			Secrets:         handlers.MakeSecretHandler(client.NamespaceService(), baseUserSecretsPath),
 			Logs:            logs.NewLogHandlerFunc(faasdlogs.New(), config.ReadTimeout),
 			MutateNamespace: handlers.MakeMutateNamespace(client),
+			ListCheckpoint:  handlers.MakeCheckpointReader(),
 		}
 
 		log.Printf("Listening on: 0.0.0.0:%d\n", *config.TCPPort)

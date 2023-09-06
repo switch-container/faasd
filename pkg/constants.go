@@ -13,4 +13,22 @@ const (
 	faasServicesPullAlways = false
 
 	defaultSnapshotter = "overlayfs"
+
+	// default checkpoint image directory
+	FaasdCheckpointDirPrefix = "/var/lib/faasd/checkpoints/images"
+	// default CRIU work directory (i.e. generate criu log)
+	FaasdCRIUCheckpointWorkPrefix = "/var/lib/faasd/checkpoints/criu-c-workdir"
+	FaasdCRIUResotreWorkPrefix    = "/var/lib/faasd/checkpoints/criu-r-workdir"
+
+  // pkg means /home/dir at
+  FaasdPackageDirPrefix = "/var/lib/faasd/pkgs"
+	FaasdAppWorkDirPrefix = "/var/lib/faasd/app/work"
+	FaasdAppUpperDirPrefix = "/var/lib/faasd/app/upper"
+	FaasdAppMergeDirPrefix = "/var/lib/faasd/app/merged"
+
+	// FaasdUpperDirPrefix  = "/var/lib/faasd/fs/upper"
+	// FaasdWorkDirPrefix   = "/var/lib/faasd/fs/work"
+	// FaasdRootfsDirPrefix = "/var/lib/faasd/fs/rootfs"
+
+  FaasdRootOverlayHelper = "faasd-fs-switcher"
 )

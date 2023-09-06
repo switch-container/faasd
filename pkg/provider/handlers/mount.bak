@@ -1,0 +1,378 @@
+// package handlers
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/namespaces"
+	"github.com/opencontainers/image-spec/identity"
+	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/openfaas/faasd/pkg"
+	"github.com/pkg/errors"
+	"golang.org/x/sys/unix"
+)
+
+// When switching container, we need change the rootfs to matched the
+// target container. For simplicity while providing enough flexibility,
+// we only support one overlayfs + defaultMounts() + getOSMounts() for
+// all container.
+
+const (
+	tmpRoot string = "__new_root"
+)
+
+// TODO(huang-jl) handle /proc and /sys
+// this is copied from containerd
+func defaultMounts() []specs.Mount {
+	return []specs.Mount{
+		{
+			Destination: "/proc",
+			Type:        "proc",
+			Source:      "proc",
+			Options:     []string{"nosuid", "noexec", "nodev"},
+		},
+		{
+			Destination: "/dev",
+			Type:        "tmpfs",
+			Source:      "tmpfs",
+			Options:     []string{"nosuid", "strictatime", "mode=755", "size=65536k"},
+		},
+		{
+			Destination: "/dev/pts",
+			Type:        "devpts",
+			Source:      "devpts",
+			Options:     []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"},
+		},
+		{
+			Destination: "/dev/shm",
+			Type:        "tmpfs",
+			Source:      "shm",
+			Options:     []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"},
+		},
+		{
+			Destination: "/dev/mqueue",
+			Type:        "mqueue",
+			Source:      "mqueue",
+			Options:     []string{"nosuid", "noexec", "nodev"},
+		},
+		{
+			Destination: "/sys",
+			Type:        "sysfs",
+			Source:      "sysfs",
+			Options:     []string{"nosuid", "noexec", "nodev", "ro"},
+		},
+		{
+			Destination: "/run",
+			Type:        "tmpfs",
+			Source:      "tmpfs",
+			Options:     []string{"nosuid", "strictatime", "mode=755", "size=65536k"},
+		},
+	}
+}
+
+func parseMountOptions(options []string) (int, string, bool) {
+	var (
+		flag    int
+		losetup bool
+		data    []string
+	)
+	loopOpt := "loop"
+	flags := map[string]struct {
+		clear bool
+		flag  int
+	}{
+		"async":         {true, unix.MS_SYNCHRONOUS},
+		"atime":         {true, unix.MS_NOATIME},
+		"bind":          {false, unix.MS_BIND},
+		"defaults":      {false, 0},
+		"dev":           {true, unix.MS_NODEV},
+		"diratime":      {true, unix.MS_NODIRATIME},
+		"dirsync":       {false, unix.MS_DIRSYNC},
+		"exec":          {true, unix.MS_NOEXEC},
+		"mand":          {false, unix.MS_MANDLOCK},
+		"noatime":       {false, unix.MS_NOATIME},
+		"nodev":         {false, unix.MS_NODEV},
+		"nodiratime":    {false, unix.MS_NODIRATIME},
+		"noexec":        {false, unix.MS_NOEXEC},
+		"nomand":        {true, unix.MS_MANDLOCK},
+		"norelatime":    {true, unix.MS_RELATIME},
+		"nostrictatime": {true, unix.MS_STRICTATIME},
+		"nosuid":        {false, unix.MS_NOSUID},
+		"rbind":         {false, unix.MS_BIND | unix.MS_REC},
+		"relatime":      {false, unix.MS_RELATIME},
+		"remount":       {false, unix.MS_REMOUNT},
+		"ro":            {false, unix.MS_RDONLY},
+		"rw":            {true, unix.MS_RDONLY},
+		"strictatime":   {false, unix.MS_STRICTATIME},
+		"suid":          {true, unix.MS_NOSUID},
+		"sync":          {false, unix.MS_SYNCHRONOUS},
+	}
+	for _, o := range options {
+		// If the option does not exist in the flags table or the flag
+		// is not supported on the platform,
+		// then it is a data value for a specific fs type
+		if f, exists := flags[o]; exists && f.flag != 0 {
+			if f.clear {
+				flag &^= f.flag
+			} else {
+				flag |= f.flag
+			}
+		} else if o == loopOpt {
+			losetup = true
+		} else {
+			data = append(data, o)
+		}
+	}
+	return flag, strings.Join(data, ","), losetup
+}
+
+// getOSMounts provides a mount for os-specific files such
+// as the hosts file and resolv.conf
+func getOSMounts() []specs.Mount {
+	// Prior to hosts_dir env-var, this value was set to
+	// os.Getwd()
+	hostsDir := "/var/lib/faasd"
+	mounts := []specs.Mount{}
+	mounts = append(mounts, specs.Mount{
+		Destination: "/etc/resolv.conf",
+		Type:        "bind",
+		Source:      path.Join(hostsDir, "resolv.conf"),
+		Options:     []string{"rbind", "ro"},
+	})
+
+	mounts = append(mounts, specs.Mount{
+		Destination: "/etc/hosts",
+		Type:        "bind",
+		Source:      path.Join(hostsDir, "hosts"),
+		Options:     []string{"rbind", "ro"},
+	})
+	return mounts
+}
+
+var ErrLowerDirNotFind = errors.New("could not find rootfs info")
+
+// we only consider overlayfs here
+type RootOverlay struct {
+	lowerdirs string
+	upperdir  string
+	workdir   string
+	mergedir  string
+}
+
+// MountManager is used for mount rootfs for new container
+type RootfsManager struct {
+	// a map from serviceName to lowerdirs
+	lowerdirs map[string]string
+	rw        sync.RWMutex
+	rootMntNs *os.File
+	cwd       string
+}
+
+var rootfsManager RootfsManager
+
+func init() {
+	mntNs, err := os.Open("/proc/self/ns/mnt")
+	if err != nil {
+		panic(fmt.Sprintf("cannot open root mnt ns: %s", err))
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		panic(fmt.Sprintf("cannot get current working dir: %s", err))
+	}
+	// unmount previous rootfs if exists
+	// we need clean these directories
+	items, err := os.ReadDir(pkg.FaasdRootfsDirPrefix)
+	if err != nil {
+		panic(fmt.Sprintf("error when clean rootfs dir %s", err))
+	}
+	for _, item := range items {
+		p := path.Join(pkg.FaasdRootfsDirPrefix, item.Name())
+		// we ignore error returned here
+		unix.Unmount(p, 0)
+	}
+	// remove and re-create
+	for _, dir := range [3]string{pkg.FaasdUpperDirPrefix,
+		pkg.FaasdWorkDirPrefix, pkg.FaasdRootfsDirPrefix} {
+		if err = os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+			panic(fmt.Sprintf("error when clean %s dir %s", dir, err))
+		}
+		if err = os.MkdirAll(dir, 0755); err != nil {
+			panic(fmt.Sprintf("mkdir %s failed", dir))
+		}
+
+	}
+	rootfsManager.rootMntNs = mntNs
+	rootfsManager.cwd = cwd
+	rootfsManager.lowerdirs = make(map[string]string)
+}
+
+// we make sure that rootfs is in the first value of returned slice
+func (m *RootfsManager) GetLowerDirs(serviceName string) (string, error) {
+	m.rw.RLock()
+	defer m.rw.RUnlock()
+	lowers, ok := m.lowerdirs[serviceName]
+	if !ok {
+		return "", errors.Wrapf(ErrLowerDirNotFind, "service %s", serviceName)
+	}
+	return lowers, nil
+}
+
+// Add lowerdirs of serviceName into rootfs manager
+// The RootfsManager itself behaves like a cache
+// so that when creating overlayfs do not need to ask containerd
+func (m *RootfsManager) AddMountInfo(serviceName string, lowerdir string) error {
+	m.rw.Lock()
+	defer m.rw.Unlock()
+	l, ok := m.lowerdirs[serviceName]
+	if ok {
+		if l != lowerdir {
+			return fmt.Errorf("add conflict lower dir for %s", serviceName)
+		}
+		return nil
+	}
+	m.lowerdirs[serviceName] = lowerdir
+	return nil
+}
+
+// return a new root overlay information
+// which includes lowerdir, upperdir, workdir and mergedir.
+// (i.e. with these info we can recreate a root overlayfs)
+func (m *RootfsManager) PrepareRootOverlay(serviceName string, id uint64) (RootOverlay, error) {
+	var res RootOverlay
+	name := GetInstanceID(serviceName, id)
+	lowerdir, err := m.GetLowerDirs(serviceName)
+	if err != nil {
+		return res, err
+	}
+	// make dir
+	upperdir := path.Join(pkg.FaasdUpperDirPrefix, name)
+	workdir := path.Join(pkg.FaasdWorkDirPrefix, name)
+	mergedir := path.Join(pkg.FaasdRootfsDirPrefix, name)
+	for _, dir := range [3]string{upperdir, workdir, mergedir} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			return res, fmt.Errorf("dir %s alread exist", dir)
+		}
+		if err := os.Mkdir(dir, 0755); err != nil {
+			return res, err
+		}
+	}
+	res.lowerdirs = lowerdir
+	res.upperdir = upperdir
+	res.workdir = workdir
+	res.mergedir = mergedir
+
+	return res, nil
+}
+
+// Please make sure that ms[0] is the root overlayfs
+func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, id uint64, oldInfo ContainerInfo) (RootOverlay, error) {
+	// 1. mount a new overlay in old container's mnt namespace
+	rootOverlay, err := m.PrepareRootOverlay(serviceName, id)
+	if err != nil {
+		return rootOverlay, err
+	}
+	args := []string{
+		"--old-root", oldInfo.rootfs.merged,
+		"--lower", rootOverlay.lowerdirs,
+		"--upper", rootOverlay.upperdir,
+		"--work", rootOverlay.workdir,
+		"--new-root", rootOverlay.mergedir,
+		strconv.Itoa(oldInfo.pid),
+	}
+	start := time.Now()
+	var out bytes.Buffer
+	cmd := exec.Command(pkg.FaasdRootOverlayHelper, args...)
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err = cmd.Start(); err != nil {
+		return rootOverlay, errors.Wrap(err, "error when execute "+pkg.FaasdRootOverlayHelper)
+	}
+	if err = cmd.Wait(); err != nil {
+		return rootOverlay, errors.Wrapf(err, "error when wait %s: %s", pkg.FaasdRootOverlayHelper, out.String())
+	}
+  log.Printf("execute %s spent %s: %s\n", pkg.FaasdRootOverlayHelper, time.Since(start), out.String())
+	// mount extra mountpoints
+	osMnts := getOSMounts()
+	for _, m := range osMnts {
+		flags, data, losetup := parseMountOptions(m.Options)
+		if losetup {
+			return rootOverlay, fmt.Errorf("do not support loop %v", m.Options)
+		}
+		// create the path for bind mount
+		target := path.Join(rootOverlay.mergedir, m.Destination)
+		file, err := os.Create(target)
+		if err != nil {
+			return rootOverlay, nil
+		}
+		file.Close()
+		if err := unix.Mount(m.Source, path.Join(rootOverlay.mergedir, m.Destination),
+			m.Type, uintptr(flags), data); err != nil {
+			return rootOverlay, errors.Wrapf(err, "mount %v failed", m)
+		}
+	}
+	return rootOverlay, nil
+}
+
+// parse rootfs info from snapshotter (e.g., Mounts() or View() or Prepare())
+func parseRootFromSnapshotter(ns string, containerID string, mounts []mount.Mount) (RootOverlay, error) {
+	var res RootOverlay
+	if len(mounts) != 1 || mounts[0].Source != "overlay" || mounts[0].Type != "overlay" {
+		return res, fmt.Errorf("weird mounts from snapshotter %v !", mounts)
+	}
+	m := mounts[0]
+	for _, opt := range m.Options {
+		if upperdir, ok := strings.CutPrefix(opt, "upperdir="); ok {
+			res.upperdir = upperdir
+		}
+		if workdir, ok := strings.CutPrefix(opt, "workdir="); ok {
+			res.workdir = workdir
+		}
+		if lowerdirs, ok := strings.CutPrefix(opt, "lowerdir="); ok {
+			res.lowerdirs = lowerdirs
+		}
+	}
+	res.mergedir = fmt.Sprintf("/run/containerd/io.containerd.runtime.v2.task/%s/%s/rootfs",
+		ns, containerID)
+	return res, nil
+}
+
+func getImageLowerDir(ctx context.Context, client *containerd.Client, img containerd.Image,
+	serviceName string, id uint64) (string, error) {
+	instanceID := GetInstanceID(serviceName, id)
+	diffIDs, err := img.RootFS(ctx)
+	if err != nil {
+		return "", err
+	}
+	parent := identity.ChainID(diffIDs).String()
+
+	snapshotter := client.SnapshotService("")
+	snapshotKey := fmt.Sprintf("%s-snapshot", instanceID)
+	ms, err := snapshotter.View(ctx, snapshotKey, parent)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		// ignore the error
+		_ = snapshotter.Remove(ctx, snapshotKey)
+	}()
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return "", errors.Wrap(err, "get namespace from context when get lower dir failed")
+	}
+	rootOverlay, err := parseRootFromSnapshotter(ns, instanceID, ms)
+	if err != nil {
+		return "", err
+	}
+	return rootOverlay.lowerdirs, nil
+}

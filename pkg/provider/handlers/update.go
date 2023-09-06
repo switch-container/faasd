@@ -92,7 +92,7 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 		// The pull has already been done in prepull, so we can force this pull to "false"
 		pull := false
 
-		if err := deploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
+		if err := classicalDeploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
 			log.Printf("[Update] error deploying %s, error: %s\n", name, err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

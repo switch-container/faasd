@@ -32,10 +32,10 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/oci"
-	"github.com/containerd/containerd/protobuf"
 	"github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/fifo"
-	"github.com/containerd/typeurl/v2"
+	"github.com/containerd/typeurl"
+	prototypes "github.com/gogo/protobuf/types"
 	ver "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/selinux/go-selinux/label"
@@ -74,11 +74,15 @@ type Container interface {
 	// SetLabels sets the provided labels for the container and returns the final label set
 	SetLabels(context.Context, map[string]string) (map[string]string, error)
 	// Extensions returns the extensions set on the container
-	Extensions(context.Context) (map[string]typeurl.Any, error)
+	Extensions(context.Context) (map[string]prototypes.Any, error)
 	// Update a container
 	Update(context.Context, ...UpdateContainerOpts) error
 	// Checkpoint creates a checkpoint image of the current container
 	Checkpoint(context.Context, string, ...CheckpointOpts) (Image, error)
+	// switch a running task from a checkpoint
+	SwitchTask(ctx context.Context, ioCreate cio.Creator, opts ...SwitchTaskOpts) (Task, error)
+	// take over control of a container and return its main pid
+	TakeOver(ctx context.Context, newPid int) (int, error)
 }
 
 func containerFromRecord(client *Client, c containers.Container) *container {
@@ -120,7 +124,7 @@ func (c *container) Info(ctx context.Context, opts ...InfoOpts) (containers.Cont
 	return c.metadata, nil
 }
 
-func (c *container) Extensions(ctx context.Context) (map[string]typeurl.Any, error) {
+func (c *container) Extensions(ctx context.Context) (map[string]prototypes.Any, error) {
 	r, err := c.get(ctx)
 	if err != nil {
 		return nil, err
@@ -163,7 +167,7 @@ func (c *container) Spec(ctx context.Context) (*oci.Spec, error) {
 		return nil, err
 	}
 	var s oci.Spec
-	if err := json.Unmarshal(r.Spec.GetValue(), &s); err != nil {
+	if err := json.Unmarshal(r.Spec.Value, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil
@@ -258,7 +262,6 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 			request.Rootfs = append(request.Rootfs, &types.Mount{
 				Type:    m.Type,
 				Source:  m.Source,
-				Target:  m.Target,
 				Options: m.Options,
 			})
 		}
@@ -276,7 +279,6 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 			request.Rootfs = append(request.Rootfs, &types.Mount{
 				Type:    m.Type,
 				Source:  m.Source,
-				Target:  m.Target,
 				Options: m.Options,
 			})
 		}
@@ -286,7 +288,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		if err != nil {
 			return nil, err
 		}
-		request.Options = protobuf.FromAny(any)
+		request.Options = any
 	}
 	t := &task{
 		client: c.client,
@@ -297,12 +299,138 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	if info.Checkpoint != nil {
 		request.Checkpoint = info.Checkpoint
 	}
+	if info.CheckpointPath != "" {
+		request.CheckpointPath = info.CheckpointPath
+	}
+	// an example of request.Rootfs:
+	// [&Mount{Type:overlay,Source:overlay,Target:,Options:[index=off workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/106/work
+	// upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/106/fs
+	// lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/105/fs:
+	// /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/98/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9],
+	// XXX_unrecognized:[],}]
+	//
+	// which means it typically only contains an overlay rootfs
+	// fmt.Printf("TaskService() create request mount: %v", request.Rootfs)
 	response, err := c.client.TaskService().Create(ctx, request)
 	if err != nil {
 		return nil, errdefs.FromGRPC(err)
 	}
 	t.pid = response.Pid
 	return t, nil
+}
+
+// called from docker/moby libcontainerd
+func (c *container) SwitchTask(ctx context.Context, ioCreate cio.Creator, opts ...SwitchTaskOpts) (_ Task, err error) {
+	i, err := ioCreate(c.id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil && i != nil {
+			i.Cancel()
+			i.Close()
+		}
+	}()
+	cfg := i.Config()
+	request := &tasks.SwitchTaskRequest{
+		ContainerID: c.id,
+		Terminal:    cfg.Terminal,
+		Stdin:       cfg.Stdin,
+		Stdout:      cfg.Stdout,
+		Stderr:      cfg.Stderr,
+	}
+	r, err := c.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if r.SnapshotKey != "" {
+		if r.Snapshotter == "" {
+			return nil, fmt.Errorf("unable to resolve rootfs mounts without snapshotter on container: %w", errdefs.ErrInvalidArgument)
+		}
+
+		// get the rootfs from the snapshotter and add it to the request
+		s, err := c.client.getSnapshotter(ctx, r.Snapshotter)
+		if err != nil {
+			return nil, err
+		}
+		mounts, err := s.Mounts(ctx, r.SnapshotKey)
+		if err != nil {
+			return nil, err
+		}
+		spec, err := c.Spec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range mounts {
+			if spec.Linux != nil && spec.Linux.MountLabel != "" {
+				context := label.FormatMountLabel("", spec.Linux.MountLabel)
+				if context != "" {
+					m.Options = append(m.Options, context)
+				}
+			}
+			request.Rootfs = append(request.Rootfs, &types.Mount{
+				Type:    m.Type,
+				Source:  m.Source,
+				Options: m.Options,
+			})
+		}
+	}
+
+	info := TaskInfo{
+		runtime: r.Runtime.Name,
+	}
+
+	for _, o := range opts {
+		if err := o(ctx, c.client, &info); err != nil {
+			return nil, err
+		}
+	}
+
+	if info.RootFS != nil {
+		for _, m := range info.RootFS {
+			request.Rootfs = append(request.Rootfs, &types.Mount{
+				Type:    m.Type,
+				Source:  m.Source,
+				Options: m.Options,
+			})
+		}
+	}
+
+	if info.Options != nil {
+		any, err := typeurl.MarshalAny(info.Options)
+		if err != nil {
+			return nil, err
+		}
+		request.Options = any
+	}
+
+	t := &task{
+		client: c.client,
+		io:     i,
+		id:     c.id,
+		c:      c,
+	}
+
+	response, err := c.client.TaskService().Switch(ctx, request)
+
+	if err != nil {
+		return nil, errdefs.FromGRPC(err)
+	}
+
+	t.pid = response.Pid
+	return t, nil
+}
+
+func (c *container) TakeOver(ctx context.Context, newPid int) (int, error) {
+	request := &tasks.TakeOverTaskRequest{
+		ContainerID: c.ID(),
+		NewPid:      int64(newPid),
+	}
+	response, err := c.client.TaskService().TakeOver(ctx, request)
+	if err != nil {
+		return -1, errdefs.FromGRPC(err)
+	}
+	return int(response.Pid), nil
 }
 
 func (c *container) Update(ctx context.Context, opts ...UpdateContainerOpts) error {
@@ -398,7 +526,7 @@ func (c *container) loadTask(ctx context.Context, ioAttach cio.Attach) (Task, er
 		return nil, err
 	}
 	var i cio.IO
-	if ioAttach != nil && response.Process.Status != tasktypes.Status_UNKNOWN {
+	if ioAttach != nil && response.Process.Status != tasktypes.StatusUnknown {
 		// Do not attach IO for task in unknown state, because there
 		// are no fifo paths anyway.
 		if i, err = attachExistingIO(response, ioAttach); err != nil {

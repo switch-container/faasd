@@ -52,6 +52,7 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 		handlers.Info = auth.DecorateWithBasicAuth(handlers.Info, credentials)
 		handlers.Secrets = auth.DecorateWithBasicAuth(handlers.Secrets, credentials)
 		handlers.Logs = auth.DecorateWithBasicAuth(handlers.Logs, credentials)
+		handlers.ListCheckpoint = auth.DecorateWithBasicAuth(handlers.ListCheckpoint, credentials)
 	}
 
 	hm := newHttpMetrics()
@@ -99,6 +100,8 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 	if handlers.Health != nil {
 		r.HandleFunc("/healthz", handlers.Health).Methods(http.MethodGet)
 	}
+
+	r.HandleFunc("/system/checkpoints", handlers.ListCheckpoint).Methods(http.MethodGet)
 
 	r.HandleFunc("/metrics", promhttp.Handler().ServeHTTP)
 

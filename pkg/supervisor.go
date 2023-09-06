@@ -51,8 +51,8 @@ type Service struct {
 }
 
 type ServicePort struct {
-	TargetPort uint32
-	Port       uint32
+	TargetPort uint32 // port inside the container
+	Port       uint32 // host port
 	HostIP     string
 }
 

@@ -20,6 +20,7 @@ package containerd.services.tasks.v1;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/any.proto";
+import weak "gogoproto/gogo.proto";
 import "github.com/containerd/containerd/api/types/mount.proto";
 import "github.com/containerd/containerd/api/types/metrics.proto";
 import "github.com/containerd/containerd/api/types/descriptor.proto";
@@ -34,6 +35,11 @@ service Tasks {
 
 	// Start a process.
 	rpc Start(StartRequest) returns (StartResponse);
+
+	// Switch a task from checkpoint.
+	rpc Switch(SwitchTaskRequest) returns (SwitchTaskResponse);
+
+	rpc TakeOver(TakeOverTaskRequest) returns (TakeOverTaskResponse);
 
 	// Delete a task and on disk state.
 	rpc Delete(DeleteTaskRequest) returns (DeleteResponse);
@@ -89,11 +95,49 @@ message CreateTaskRequest {
 	google.protobuf.Any options = 9;
 
 	string runtime_path = 10;
+
+	string checkpointPath = 11;
 }
 
 message CreateTaskResponse {
 	string container_id = 1;
 	uint32 pid = 2;
+}
+
+message SwitchTaskRequest {
+	string container_id = 1;
+
+	// RootFS provides the pre-chroot mounts to perform in the shim before
+	// executing the container task.
+	//
+	// These are for mounts that cannot be performed in the user namespace.
+	// Typically, these mounts should be resolved from snapshots specified on
+	// the container object.
+	repeated containerd.types.Mount rootfs = 3;
+
+	string stdin = 4;
+	string stdout = 5;
+	string stderr = 6;
+	bool terminal = 7;
+
+
+	google.protobuf.Any options = 8;
+
+	string runtime_path = 9;
+}
+
+message SwitchTaskResponse {
+	string container_id = 1;
+	uint32 pid = 2;
+}
+
+message TakeOverTaskRequest {
+	string container_id = 1;
+	int64 new_pid = 2;
+}
+
+message TakeOverTaskResponse {
+	uint32 pid = 1;
 }
 
 message StartRequest {
@@ -113,7 +157,7 @@ message DeleteResponse {
 	string id = 1;
 	uint32 pid = 2;
 	uint32 exit_status = 3;
-	google.protobuf.Timestamp exited_at = 4;
+	google.protobuf.Timestamp exited_at = 4 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
 }
 
 message DeleteProcessRequest {
@@ -194,7 +238,7 @@ message ListPidsResponse {
 
 message CheckpointTaskRequest {
 	string container_id = 1;
-	string parent_checkpoint = 2;
+	string parent_checkpoint = 2 [(gogoproto.customtype) = "github.com/opencontainers/go-digest.Digest", (gogoproto.nullable) = false];
 	google.protobuf.Any options = 3;
 }
 
@@ -223,5 +267,5 @@ message WaitRequest {
 
 message WaitResponse {
 	uint32 exit_status = 1;
-	google.protobuf.Timestamp exited_at = 2;
+	google.protobuf.Timestamp exited_at = 2 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
 }

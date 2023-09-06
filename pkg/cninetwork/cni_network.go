@@ -76,6 +76,9 @@ var defaultCNIConf = fmt.Sprintf(`
 `, defaultNetworkName, defaultBridgeName, defaultSubnet, CNIDataDir)
 
 // InitNetwork writes configlist file and initializes CNI network
+// 1. write config into /etc/cni/net.d/10-openfaas.conflist
+// 2. initialize a libcni instance
+// 3. load the config (created in step1) into cni instance
 func InitNetwork() (gocni.CNI, error) {
 
 	log.Printf("Writing network config...\n")

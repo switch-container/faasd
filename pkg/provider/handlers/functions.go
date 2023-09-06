@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -16,6 +15,8 @@ import (
 	faasd "github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/cninetwork"
 )
+
+// TODO(huang-jl) change the Function metadata
 
 type Function struct {
 	name        string
@@ -36,27 +37,25 @@ type Function struct {
 // ListFunctions returns a map of all functions with running tasks on namespace
 func ListFunctions(client *containerd.Client, namespace string) (map[string]*Function, error) {
 
-	// Check if namespace exists, and it has the openfaas label
-	valid, err := validNamespace(client.NamespaceService(), namespace)
+	if namespace != faasd.DefaultFunctionNamespace {
+		return nil, fmt.Errorf("Only support default namespace %s", faasd.DefaultFunctionNamespace)
+	}
+
+	containers, err := lambdaManager.ListInstances()
 	if err != nil {
 		return nil, err
 	}
 
-	if !valid {
-		return nil, errors.New("namespace not valid")
-	}
-
-	ctx := namespaces.WithNamespace(context.Background(), namespace)
 	functions := make(map[string]*Function)
 
-	containers, err := client.Containers(ctx)
-	if err != nil {
-		return functions, err
-	}
-
 	for _, c := range containers {
-		name := c.ID()
-		f, err := GetFunction(client, name, namespace)
+		name := GetInstanceID(c.serviceName, c.id)
+		f := Function{
+			name:      name,
+			namespace: faasd.DefaultFunctionNamespace,
+			pid:       uint32(c.pid),
+			IP:        c.IpAddress,
+		}
 		if err != nil {
 			log.Printf("skipping %s, error: %s", name, err)
 		} else {

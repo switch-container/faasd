@@ -15,6 +15,11 @@ publish: dist hashgen
 
 local:
 	CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o bin/faasd
+	# g++ -O2 -Wall -o bin/faasd-fs-switcher utils/fs_switcher.cpp
+
+install:
+	cp bin/faasd /usr/local/bin
+	cp bin/faasd-fs-switcher /usr/local/bin
 
 .PHONY: test
 test:
