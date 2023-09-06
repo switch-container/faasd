@@ -202,7 +202,7 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 	)
 
 	if err != nil {
-		return fmt.Errorf("unable to create container: %s, error: %w", instanceID, err)
+		return errors.Wrapf(err, "unable to create container: %s", instanceID)
 	}
 
 	t, err := createTask(ctx, container, cni)
@@ -210,6 +210,10 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 		return err
 	}
 
+	// we take over the control of container
+	if _, err = container.TakeOver(ctx, -1); err != nil {
+		return errors.Wrapf(err, "take over container %s failed", instanceID)
+	}
 	updater, err := initContainerInfo(ctx, client, container, serviceName, id, t.Pid())
 	if err != nil {
 		return err

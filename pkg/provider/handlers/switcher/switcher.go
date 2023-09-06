@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	criurpc "github.com/checkpoint-restore/go-criu/v5/rpc"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
 	"github.com/containerd/containerd"
@@ -107,22 +109,19 @@ func (switcher *Switcher) doSwitch(pid int) error {
 
 	start := time.Now()
 	if err = handleSwitchNamespaces(rpcOpts, pid, &extraFiles); err != nil {
-		logrus.Errorf("handle switch namespace failed %s", err)
-		return err
+		return errors.Wrap(err, "handle switch namespace failed")
 	}
 
 	// [20us]
 	if err = applyCgroup(pid, rpcOpts, criuOpts); err != nil {
-		logrus.Errorf("apply cgroup failed %s", err)
-		return err
+		return errors.Wrap(err, "apply cgroup failed")
 	}
 
 	if err = syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		logrus.Errorf("kill original process failed %s", err)
-		return err
+		return errors.Wrap(err, "kill original process failed")
 	}
 
-	logrus.Debugf("handle ns + apply cgroup + kill took %s", time.Since(start))
+	log.Printf("handle ns + apply cgroup + kill %d took %s", pid, time.Since(start))
 
 	// resolve + unmarshal + set inherit fd: [20us]
 	var (
@@ -147,10 +146,9 @@ func (switcher *Switcher) doSwitch(pid int) error {
 
 	start = time.Now()
 	if err = switcher.criuSwrk(&criurpc.CriuReq{Type: &t, Opts: rpcOpts}, criuOpts, extraFiles); err != nil {
-		logrus.Errorf("criuSwrk failed %s", err)
-		return err
+		return errors.Wrapf(err, "criuSwrk failed")
 	}
-	logrus.Debugf("ciruSwrk total took %s", time.Since(start))
+	log.Printf("ciruSwrk total took %s", time.Since(start))
 
 	return nil
 }
@@ -312,7 +310,7 @@ func SwitchFor(checkpoint, checkpointDir string, pid int, config SwitcherConfig)
 	if err := switcher.doSwitch(pid); err != nil {
 		return nil, err
 	}
-	logrus.Debugf("doSwitch took %s\t new pid %d", time.Since(start), switcher.PID())
+	log.Printf("doSwitch took %s\t new pid %d", time.Since(start), switcher.PID())
 
 	{
 		// we need reap the new process by our own
