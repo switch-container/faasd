@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
+	gocni "github.com/containerd/go-cni"
 	"github.com/pkg/errors"
 )
 
@@ -27,6 +31,7 @@ type ContainerInfo struct {
 	status    ContainerStatus
 	IpAddress string
 	rootfs    ContainerRootfsInfo
+	cniID     string
 }
 
 type ContainerRootfsInfo struct {
@@ -185,4 +190,31 @@ func (m *LambdaManager) ListInstances() ([]ContainerInfo, error) {
 	}
 
 	return res, nil
+}
+
+// clean **ALL** running instance if possible
+func LambdaShutdown(cni gocni.CNI) {
+	lambdaManager.mu.Lock()
+	defer lambdaManager.mu.Unlock()
+	for _, lambda := range lambdaManager.info {
+		for _, container := range lambda.instances {
+			if container.status.Valid() {
+				pid := container.pid
+				// remove cni network first (it needs network ns)
+				err := cni.Remove(context.Background(), container.cniID,
+					fmt.Sprintf("/proc/%d/ns/net", pid))
+				if err != nil {
+					log.Printf("remove cni network for %s failed: %s\n", container.cniID, err)
+				}
+				// kill process
+				err = syscall.Kill(pid, syscall.SIGKILL)
+				if err != nil {
+					log.Printf("kill process %d failed: %s\n", pid, err)
+				}
+				container.status = INVALID
+				log.Printf("kill instance %s-%d pid %d\n",
+					container.serviceName, container.id, pid)
+			}
+		}
+	}
 }

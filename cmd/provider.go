@@ -7,7 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
+	"sync"
+	"syscall"
 
 	"github.com/containerd/containerd"
 	bootstrap "github.com/openfaas/faas-provider"
@@ -33,9 +36,6 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().String("pull-policy", "Always", `Set to "Always" to force a pull of images upon deployment, or "IfNotPresent" to try to use a cached image.`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
-
-		handlers.InitCheckpointModule()
-		handlers.InitMountModule()
 
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
 		if flagErr != nil {
@@ -74,10 +74,23 @@ func makeProviderCmd() *cobra.Command {
 			return fmt.Errorf("cannot write resolv.conf file: %s", writeResolvErr)
 		}
 
+		handlers.InitCheckpointModule()
+		handlers.InitMountModule()
 		cni, err := cninetwork.InitNetwork()
 		if err != nil {
 			return err
 		}
+
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			<-sig
+			log.Println("Signal received.. shutting down server")
+			handlers.LambdaShutdown(cni)
+			wg.Done()
+		}()
 
 		client, err := containerd.New(providerConfig.Sock)
 		if err != nil {
@@ -115,6 +128,7 @@ func makeProviderCmd() *cobra.Command {
 
 		log.Printf("Listening on: 0.0.0.0:%d\n", *config.TCPPort)
 		bootstrap.Serve(&bootstrapHandlers, config)
+		wg.Wait()
 		return nil
 	}
 

@@ -35,8 +35,6 @@ var rootfsManager RootfsManager
 // we do not use init() directly here
 // since `faasd collect` will also call init()
 func InitMountModule() {
-	// we need clean these directories
-	// remove and re-create
 	rootfsManager.packageBase = pkg.FaasdPackageDirPrefix
 	_, err := os.Stat(rootfsManager.packageBase)
 	if err != nil {
@@ -47,15 +45,16 @@ func InitMountModule() {
 		}
 	}
 
+	// try umount overlay if possible
 	items, err := os.ReadDir(pkg.FaasdAppMergeDirPrefix)
 	if err != nil && !os.IsNotExist(err) {
 		panic(fmt.Sprintf("read dir %s failed", pkg.FaasdAppMergeDirPrefix))
 	}
 	for _, item := range items {
 		p := path.Join(pkg.FaasdAppMergeDirPrefix, item.Name())
-		// ignore error
 		unix.Unmount(p, unix.MNT_DETACH)
 	}
+	// clean app dir
 	for _, dir := range [3]string{pkg.FaasdAppWorkDirPrefix,
 		pkg.FaasdAppUpperDirPrefix, pkg.FaasdAppMergeDirPrefix} {
 		if err = os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
@@ -67,6 +66,7 @@ func InitMountModule() {
 	}
 }
 
+// TODO(huang-jl) use in-mem cache instead of access fs everytime
 func (m *RootfsManager) lookupPkg(serviceName string) (string, error) {
 	p := path.Join(m.packageBase, serviceName)
 	stat, err := os.Stat(p)
@@ -81,35 +81,42 @@ func (m *RootfsManager) lookupPkg(serviceName string) (string, error) {
 
 // Prepare the app overlay, including mkdir for upperdir and workdir
 //
-// Return the mount options of app dir overlay
-func (m *RootfsManager) PrepareAppOverlayOpts(serviceName string, id uint64) ([]string, error) {
-	var opts []string
+// Return the mounted path of app dir overlay
+func (m *RootfsManager) PrepareAppOverlay(serviceName string, id uint64) (string, error) {
 	pkgPath, err := m.lookupPkg(serviceName)
 	if err != nil {
-		return opts, errors.Wrapf(err, "lookup service app package %s failed", serviceName)
+		return "", errors.Wrapf(err, "lookup service app package %s failed", serviceName)
 	}
 	name := GetInstanceID(serviceName, id)
 	// make dir
 	upperdir := path.Join(pkg.FaasdAppUpperDirPrefix, name)
 	workdir := path.Join(pkg.FaasdAppWorkDirPrefix, name)
+	mergedir := path.Join(pkg.FaasdAppMergeDirPrefix, name)
 
-	for _, dir := range []string{upperdir, workdir} {
+	for _, dir := range []string{upperdir, workdir, mergedir} {
 		if err := os.Mkdir(dir, 0755); err != nil {
-			return opts, errors.Wrapf(err, "make dir %s", dir)
+			return "", errors.Wrapf(err, "make dir %s", dir)
 		}
 	}
 
-	opts = []string{
-		"index=off",
-		fmt.Sprintf("lowerdir=%s", pkgPath),
-		fmt.Sprintf("upperdir=%s", upperdir),
-		fmt.Sprintf("workdir=%s", workdir),
+	opts := fmt.Sprintf("index=off,lowerdir=%s,upperdir=%s,workdir=%s", pkgPath, upperdir, workdir)
+	if err = unix.Mount("overlay", mergedir, "overlay", unix.MS_MGC_VAL, opts); err != nil {
+		return "", errors.Wrapf(err, "mount overlay to %s failed", mergedir)
 	}
-
-	return opts, nil
+	return mergedir, nil
 }
 
-// Please make sure that ms[0] is the root overlayfs
+// When switching rootfs of an existing (or old) container:
+//  1. umount the old bind mount
+//  2. umount the old overlay async
+//  3. mount a new app's overlay
+//  4. bind mount this new overlay into the rootfs of old container
+//
+// The reason:
+//  1. Why choosing another bind mount here instead of mount overlay directly:
+//     The time spent on umount in critical path.
+//  2. Why we use overlay instead of bind mount lowerdir directly:
+//     We need read-write capability of the dir.
 func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, id uint64, oldInfo ContainerInfo) error {
 	// clean old container's upper directory
 	start := time.Now()
@@ -128,26 +135,25 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, id uint64, oldIn
 	}
 	log.Printf("clean old container's writable layer spent %s\n", time.Since(start))
 
-	start = time.Now()
 	// TODO(huang-jl) remove old workdir and upperdir
-	// umount previous app overlay bind mount if exists
-	targetAppOverlayMount := path.Join(oldInfo.rootfs.merged, "home/app")
-	// ignore error [roughly 1.8ms]
-	unix.Unmount(targetAppOverlayMount, unix.MNT_DETACH)
+	start = time.Now()
+	targetBindPath := path.Join(oldInfo.rootfs.merged, "home/app")
+	unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
+	go func() {
+		oldOverlay := path.Join(pkg.FaasdAppMergeDirPrefix, GetInstanceID(oldInfo.serviceName, oldInfo.id))
+		unix.Unmount(oldOverlay, unix.MNT_DETACH)
+	}()
 	log.Printf("unmount old app dir spent %s\n", time.Since(start))
 
 	start = time.Now()
-	// mount a new overlay in old container's mnt namespace
-	appOverlayOpts, err := m.PrepareAppOverlayOpts(serviceName, id)
+	appOverlay, err := m.PrepareAppOverlay(serviceName, id)
 	if err != nil {
 		return errors.Wrapf(err, "prepare app overlay for %s-%d failed", serviceName, id)
 	}
-	// mount new overlay [roughly 0.8ms]
-	opts := strings.Join(appOverlayOpts, ",")
-	err = unix.Mount("overlay", targetAppOverlayMount, "overlay", unix.MS_MGC_VAL, opts)
+	err = unix.Mount(appOverlay, targetBindPath, "", unix.MS_BIND, "") // [0.8ms]
 	if err != nil {
-		return errors.Wrapf(err, "mount overlay (opts %s) to %s failed",
-			appOverlayOpts, targetAppOverlayMount)
+		return errors.Wrapf(err, "bind mount overlay %s to %s failed",
+			appOverlay, targetBindPath)
 	}
 	log.Printf("mount new overlay dir spent %s\n", time.Since(start))
 

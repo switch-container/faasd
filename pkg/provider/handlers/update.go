@@ -17,6 +17,8 @@ import (
 	"github.com/openfaas/faasd/pkg/service"
 )
 
+// TODO(huang-jl) Remove update handler
+// indeed we do not need it
 func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath string, alwaysPull bool) func(w http.ResponseWriter, r *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +94,7 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 		// The pull has already been done in prepull, so we can force this pull to "false"
 		pull := false
 
-		if err := classicalDeploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
+		if _, err := classicalDeploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
 			log.Printf("[Update] error deploying %s, error: %s\n", name, err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

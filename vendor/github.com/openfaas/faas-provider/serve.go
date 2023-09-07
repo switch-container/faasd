@@ -4,9 +4,15 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+	"syscall"
+	"time"
+
+	"os"
+	"os/signal"
 
 	"github.com/gorilla/mux"
 	"github.com/openfaas/faas-provider/auth"
@@ -121,5 +127,19 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 		Handler:        r,
 	}
 
-	log.Fatal(s.ListenAndServe())
+	go func() {
+		if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Shutdown the server gracefully
+	if err := s.Shutdown(ctx); err != nil {
+		log.Fatalf("Server shutdown failed: %v\n", err)
+	}
 }

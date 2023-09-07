@@ -114,7 +114,7 @@ func InitNetwork() (gocni.CNI, error) {
 
 // CreateCNINetwork creates a CNI network interface and attaches it to the context
 func CreateCNINetwork(ctx context.Context, cni gocni.CNI, task containerd.Task, labels map[string]string) (*gocni.CNIResult, error) {
-	id := netID(task)
+	id := NetID(task)
 	netns := netNamespace(task)
 	result, err := cni.Setup(ctx, id, netns, gocni.WithLabels(labels))
 	if err != nil {
@@ -136,7 +136,7 @@ func DeleteCNINetwork(ctx context.Context, cni gocni.CNI, client *containerd.Cli
 
 		log.Printf("[Delete] removing CNI network for: %s\n", task.ID())
 
-		id := netID(task)
+		id := NetID(task)
 		netns := netNamespace(task)
 
 		if err := cni.Remove(ctx, id, netns); err != nil {
@@ -219,7 +219,7 @@ func CNIGateway() (string, error) {
 }
 
 // netID generates the network IF based on task name and task PID
-func netID(task containerd.Task) string {
+func NetID(task containerd.Task) string {
 	return fmt.Sprintf("%s-%d", task.ID(), task.Pid())
 }
 

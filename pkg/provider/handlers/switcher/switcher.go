@@ -124,6 +124,8 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	log.Printf("handle ns + apply cgroup + kill %d took %s", pid, time.Since(start))
 
 	// resolve + unmarshal + set inherit fd: [20us]
+
+	// the descriptors handling is copying from runc checkpoint
 	var (
 		fds    []string
 		fdJSON []byte
@@ -277,7 +279,6 @@ func initContainerdClient(addr string) (client *containerd.Client, err error) {
 	return nil, err
 }
 
-// TODO(huang-jl) call TakeOver in deploy handler
 // (process id, take over from REMOTE or not, err)
 func getPidOfContainer(client *containerd.Client, containerID string) (int, containerd.Container, error) {
 	var ctr containerd.Container = nil

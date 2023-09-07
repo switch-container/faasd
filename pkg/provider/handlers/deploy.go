@@ -82,12 +82,15 @@ func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
 		name := req.Service
 		ctx := namespaces.WithNamespace(context.Background(), namespace)
 
-		deployErr := deploy(ctx, req, client, cni, namespaceSecretMountPath, checkpointDir, alwaysPull)
+		instanceID, deployErr := deploy(ctx, req, client, cni,
+			namespaceSecretMountPath, checkpointDir, alwaysPull)
 		if deployErr != nil {
 			log.Printf("[Deploy] error deploying %s, error: %s\n", name, deployErr)
 			http.Error(w, deployErr.Error(), http.StatusBadRequest)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(instanceID))
 	}
 }
 
@@ -121,7 +124,7 @@ func prepull(ctx context.Context, req types.FunctionDeployment, client *containe
 
 // TODO(huang-jl) send request to lambdaManager
 func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
-	cni gocni.CNI, secretMountPath string, alwaysPull bool) error {
+	cni gocni.CNI, secretMountPath string, alwaysPull bool) (string, error) {
 
 	log.Printf("classical deploy for request %+v", req)
 	snapshotter := ""
@@ -131,7 +134,7 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 
 	image, err := prepull(ctx, req, client, alwaysPull)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	envs := prepareEnv(req.EnvProcess, req.EnvVars)
@@ -149,13 +152,13 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 	serviceName := req.Service
 	id, err := lambdaManager.AddNewInstance(serviceName)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	instanceID := GetInstanceID(serviceName, id)
 	labels, err := buildLabels(&req)
 	if err != nil {
-		return fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
+		return "", fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
 	}
 
 	var memory *specs.LinuxMemory
@@ -170,17 +173,17 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 		memory.Limit = &v
 	}
 
-	appOverlayOpts, err := rootfsManager.PrepareAppOverlayOpts(serviceName, id)
+	appOverlay, err := rootfsManager.PrepareAppOverlay(serviceName, id)
 	if err != nil {
-		return errors.Wrapf(err, "prepare app overlay when classicalDeploy for %s failed", instanceID)
+		return "", errors.Wrapf(err, "prepare app overlay when classicalDeploy for %s failed", instanceID)
 	}
 	// we prepare an overlayfs to mount into container
 	// so that it can be read-write
 	mounts = append(mounts, specs.Mount{
 		Destination: "/home/app",
-		Type:        "overlay",
-		Source:      "overlay",
-		Options:     appOverlayOpts,
+		Type:        "bind",
+		Source:      appOverlay,
+		Options:     []string{"bind"},
 	})
 
 	log.Println(mounts)
@@ -202,24 +205,24 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 	)
 
 	if err != nil {
-		return errors.Wrapf(err, "unable to create container: %s", instanceID)
+		return "", errors.Wrapf(err, "unable to create container: %s", instanceID)
 	}
 
 	t, err := createTask(ctx, container, cni)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// we take over the control of container
-	if _, err = container.TakeOver(ctx, -1); err != nil {
-		return errors.Wrapf(err, "take over container %s failed", instanceID)
-	}
-	updater, err := initContainerInfo(ctx, client, container, serviceName, id, t.Pid())
+	//TODO(huang-jl) we take over the control of container
+	// if _, err = container.TakeOver(ctx, -1); err != nil {
+	// 	return errors.Wrapf(err, "take over container %s failed", instanceID)
+	// }
+	updater, err := initContainerInfo(ctx, client, container, serviceName, id, t)
 	if err != nil {
-		return err
+		return "", err
 	}
 	_, err = lambdaManager.UpdateInstance(serviceName, id, updater)
-	return err
+	return instanceID, err
 }
 
 // couple of things that needed to take care:
@@ -227,23 +230,23 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 //  2. TODO(huang-jl) tune the cgroup paramters, here we only care about memory limit
 //     (let criu change cgroup paramters is also ok ?)
 func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
-	checkpointDir string, candidate ContainerInfo, alwaysPull bool) (err error) {
+	checkpointDir string, candidate ContainerInfo, alwaysPull bool) (string, error) {
 	wrapLambdaManagerErr := func(e error) error {
 		return errors.Wrap(e, "switcher update lambdaManager failed")
 	}
 
-	_, err = prepull(ctx, req, client, alwaysPull)
+	_, err := prepull(ctx, req, client, alwaysPull)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(req.Secrets) > 0 {
-		return fmt.Errorf("switch do not support secrets for now")
+		return "", fmt.Errorf("switch do not support secrets for now")
 	}
 	// add instance to lambda manager
 	serviceName := req.Service
 	id, err := lambdaManager.AddNewInstance(serviceName)
 	if err != nil {
-		return wrapLambdaManagerErr(err)
+		return "", wrapLambdaManagerErr(err)
 	}
 	defer func() {
 		// clean up
@@ -254,7 +257,7 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 
 	start := time.Now()
 	if err := rootfsManager.PrepareSwitchRootfs(serviceName, id, candidate); err != nil {
-		return err
+		return "", err
 	}
 	log.Printf("PrepareSwitchRootfs spent %s\n", time.Since(start))
 
@@ -265,19 +268,19 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 	}
 	switcher, err := switcher.SwitchFor(serviceName, checkpointDir, int(candidate.pid), config)
 	if err != nil {
-		return errors.Wrapf(err, "switch from %s to %s failed", candidate.serviceName, serviceName)
+		return "", errors.Wrapf(err, "switch from %s to %s failed", candidate.serviceName, serviceName)
 	}
 	// we need update lambdaManager
 	old, err := lambdaManager.RemoveInstance(candidate.serviceName, candidate.id)
 	if err != nil {
-		return wrapLambdaManagerErr(err)
+		return "", wrapLambdaManagerErr(err)
 	}
 	if old.status != SWITCHING {
 		log.Printf("find weird instance when switching: %+v", *old)
 	}
 	newPid := switcher.PID()
 	if newPid <= 0 {
-		return fmt.Errorf("switchDeploy get wierd process id %d", newPid)
+		return "", fmt.Errorf("switchDeploy get wierd process id %d", newPid)
 	}
 
 	_, err = lambdaManager.UpdateInstance(serviceName, id, func(info *ContainerInfo) error {
@@ -287,13 +290,15 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 		// and ipaddress as candidate
 		info.IpAddress = candidate.IpAddress
 		info.rootfs = candidate.rootfs
+		info.cniID = candidate.cniID
 		return nil
 	})
-	return err
+	return GetInstanceID(serviceName, id), err
 }
 
+// Return the ID of the instance, which can be used for post request
 func deploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
-	cni gocni.CNI, secretMountPath, checkpointDir string, alwaysPull bool) error {
+	cni gocni.CNI, secretMountPath, checkpointDir string, alwaysPull bool) (string, error) {
 	// first check whether we have checkpoint
 	if !hasCheckpoint(req.Service) {
 		return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
@@ -304,7 +309,7 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 		if errors.Is(err, ErrNotFoundIdleInstance) {
 			return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
 		}
-		return err
+		return "", err
 	}
 	// we find a candidate to switch
 	return switchDeploy(ctx, req, client, checkpointDir, candidate, alwaysPull)
@@ -423,7 +428,8 @@ func withMemory(mem *specs.LinuxMemory) oci.SpecOpts {
 }
 
 func initContainerInfo(ctx context.Context, client *containerd.Client, ctr containerd.Container,
-	serviceName string, id uint64, pid uint32) (InstanceInfoUpdateFunc, error) {
+	serviceName string, id uint64, t containerd.Task) (InstanceInfoUpdateFunc, error) {
+	pid := t.Pid()
 	name := ctr.ID()
 	ip, err := cninetwork.GetIPAddress(name, pid) // [95us]
 	if err != nil {
@@ -446,6 +452,8 @@ func initContainerInfo(ctx context.Context, client *containerd.Client, ctr conta
 	if err != nil {
 		return nil, err
 	}
+
+	cniID := cninetwork.NetID(t)
 	// try to decrease the work need to do in updateFunc
 	return func(info *ContainerInfo) error {
 		info.serviceName = serviceName
@@ -456,6 +464,7 @@ func initContainerInfo(ctx context.Context, client *containerd.Client, ctr conta
 		info.rootfs.merged = rootOverlay.mergedir
 		info.status = FINISHED
 		info.IpAddress = ip
+		info.cniID = cniID
 		return nil
 	}, nil
 }
