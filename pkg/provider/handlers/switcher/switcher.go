@@ -13,6 +13,7 @@ import (
 	"time"
 
 	criurpc "github.com/checkpoint-restore/go-criu/v5/rpc"
+	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
@@ -112,6 +113,10 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		return errors.Wrap(err, "handle switch namespace failed")
 	}
 
+	if err = handlePseudoMMDrv(rpcOpts, &extraFiles); err != nil {
+		return errors.Wrap(err, "handle pseudo mm drv failed")
+	}
+
 	// [20us]
 	if err = applyCgroup(pid, rpcOpts, criuOpts); err != nil {
 		return errors.Wrap(err, "apply cgroup failed")
@@ -157,6 +162,23 @@ func (switcher *Switcher) doSwitch(pid int) error {
 
 func getNsPath(pid int, ns string) string {
 	return fmt.Sprintf("/proc/%d/ns/%s", pid, ns)
+}
+
+func handlePseudoMMDrv(rpcOpts *criurpc.CriuOpts, extraFiles *[]*os.File) error {
+	drvFile, err := os.Open(pkg.PseudoMMDrvPath)
+	if err != nil {
+		return fmt.Errorf("cannot open %s: %s", pkg.PseudoMMDrvPath, err)
+	}
+	inheritFd := &criurpc.InheritFd{
+		Key: proto.String(pkg.CRIUPseudoMMDrvInheritID),
+		// The offset of four is necessary because 0, 1, 2 and 3 are
+		// already used by stdin, stdout, stderr, 'criu swrk' socket.
+		Fd: proto.Int32(int32(4 + len(*extraFiles))),
+	}
+	rpcOpts.InheritFd = append(rpcOpts.InheritFd, inheritFd)
+	// All open FDs need to be transferred to CRIU via extraFiles
+	*extraFiles = append(*extraFiles, drvFile)
+	return nil
 }
 
 // - pid: process id of original container's process

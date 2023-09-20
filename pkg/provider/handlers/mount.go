@@ -2,11 +2,9 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/containerd/containerd/mount"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -119,7 +117,7 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, id uint64) (string
 //     We need read-write capability of the dir.
 func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, id uint64, oldInfo ContainerInfo) error {
 	// clean old container's upper directory
-	start := time.Now()
+	// start := time.Now()
 	items, err := os.ReadDir(oldInfo.rootfs.upper)
 	if err != nil {
 		return errors.Wrapf(err, "read dir %s failed", oldInfo.rootfs.upper)
@@ -133,19 +131,23 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, id uint64, oldIn
 	if err := unix.Mount("", oldInfo.rootfs.merged, "", unix.MS_REMOUNT, ""); err != nil {
 		return errors.Wrapf(err, "remount merge dir %s failed", oldInfo.rootfs.merged)
 	}
-	log.Printf("clean old container's writable layer spent %s\n", time.Since(start))
+	// log.Printf("clean old container's writable layer spent %s\n", time.Since(start))
 
-	// TODO(huang-jl) remove old workdir and upperdir
-	start = time.Now()
+	// start = time.Now()
 	targetBindPath := path.Join(oldInfo.rootfs.merged, "home/app")
 	unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
 	go func() {
-		oldOverlay := path.Join(pkg.FaasdAppMergeDirPrefix, GetInstanceID(oldInfo.serviceName, oldInfo.id))
+		oldInstanceID := GetInstanceID(oldInfo.serviceName, oldInfo.id)
+		// umount old app overlay fs
+		oldOverlay := path.Join(pkg.FaasdAppMergeDirPrefix, oldInstanceID)
 		unix.Unmount(oldOverlay, unix.MNT_DETACH)
+		// remove upper and work dir of old app overlay
+		os.RemoveAll(path.Join(pkg.FaasdAppWorkDirPrefix, oldInstanceID))
+		os.RemoveAll(path.Join(pkg.FaasdAppUpperDirPrefix, oldInstanceID))
 	}()
-	log.Printf("unmount old app dir spent %s\n", time.Since(start))
+	// log.Printf("unmount old app dir spent %s\n", time.Since(start))
 
-	start = time.Now()
+	// start = time.Now()
 	appOverlay, err := m.PrepareAppOverlay(serviceName, id)
 	if err != nil {
 		return errors.Wrapf(err, "prepare app overlay for %s-%d failed", serviceName, id)
@@ -155,7 +157,7 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, id uint64, oldIn
 		return errors.Wrapf(err, "bind mount overlay %s to %s failed",
 			appOverlay, targetBindPath)
 	}
-	log.Printf("mount new overlay dir spent %s\n", time.Since(start))
+	// log.Printf("mount new overlay dir spent %s\n", time.Since(start))
 
 	return nil
 }

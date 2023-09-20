@@ -6,7 +6,7 @@ import (
 	"os"
 	"path"
 
-	systemd "github.com/openfaas/faasd/pkg/systemd"
+	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 
 	"github.com/spf13/cobra"
@@ -22,83 +22,33 @@ const workingDirectoryPermission = 0644
 
 const faasdwd = "/var/lib/faasd"
 
-const faasdProviderWd = "/var/lib/faasd-provider"
-
 func runInstall(_ *cobra.Command, _ []string) error {
 
 	if err := ensureWorkingDir(path.Join(faasdwd, "secrets")); err != nil {
 		return err
 	}
 
-	if err := ensureWorkingDir(faasdProviderWd); err != nil {
-		return err
+	for _, dir := range []string{
+		pkg.FaasdCheckpointDirPrefix,
+		pkg.FaasdCRIUCheckpointWorkPrefix,
+		pkg.FaasdCRIUResotreWorkPrefix,
+		pkg.FaasdPackageDirPrefix,
+		pkg.FaasdAppWorkDirPrefix,
+		pkg.FaasdAppUpperDirPrefix,
+		pkg.FaasdAppMergeDirPrefix,
+	} {
+		if err := ensureWorkingDir(dir); err != nil {
+			return err
+		}
 	}
 
 	if basicAuthErr := makeBasicAuthFiles(path.Join(faasdwd, "secrets")); basicAuthErr != nil {
 		return errors.Wrap(basicAuthErr, "cannot create basic-auth-* files")
 	}
 
-	if err := cp("docker-compose.yaml", faasdwd); err != nil {
-		return err
-	}
-
-	if err := cp("prometheus.yml", faasdwd); err != nil {
-		return err
-	}
-
 	if err := cp("resolv.conf", faasdwd); err != nil {
 		return err
 	}
-
-	err := binExists("/usr/local/bin/", "faasd")
-	if err != nil {
-		return err
-	}
-
-	err = systemd.InstallUnit("faasd-provider", map[string]string{
-		"Cwd":             faasdProviderWd,
-		"SecretMountPath": path.Join(faasdwd, "secrets")})
-
-	if err != nil {
-		return err
-	}
-
-	err = systemd.InstallUnit("faasd", map[string]string{"Cwd": faasdwd})
-	if err != nil {
-		return err
-	}
-
-	err = systemd.DaemonReload()
-	if err != nil {
-		return err
-	}
-
-	err = systemd.Enable("faasd-provider")
-	if err != nil {
-		return err
-	}
-
-	err = systemd.Enable("faasd")
-	if err != nil {
-		return err
-	}
-
-	err = systemd.Start("faasd-provider")
-	if err != nil {
-		return err
-	}
-
-	err = systemd.Start("faasd")
-	if err != nil {
-		return err
-	}
-
-	fmt.Println(`Check status with:
-  sudo journalctl -u faasd --lines 100 -f
-
-Login with:
-  sudo -E cat /var/lib/faasd/secrets/basic-auth-password | faas-cli login -s`)
-
 	return nil
 }
 

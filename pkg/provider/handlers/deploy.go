@@ -38,6 +38,10 @@ func GetInstanceID(serviceName string, id uint64) string {
 func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
 	secretMountPath, checkpointDir string, alwaysPull bool) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start_ := time.Now()
+		defer func() {
+			log.Printf("Total deploy handler tooks %s\n", time.Since(start_))
+		}()
 		if r.Body == nil {
 			http.Error(w, "expected a body", http.StatusBadRequest)
 			return
@@ -60,7 +64,7 @@ func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
 		namespace := getRequestNamespace(req.Namespace)
 
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
+		valid, err := validNamespace(client.NamespaceService(), namespace) // [825us]
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -122,7 +126,6 @@ func prepull(ctx context.Context, req types.FunctionDeployment, client *containe
 	return image, nil
 }
 
-// TODO(huang-jl) send request to lambdaManager
 func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
 	cni gocni.CNI, secretMountPath string, alwaysPull bool) (string, error) {
 
@@ -188,7 +191,7 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 
 	log.Println(mounts)
 
-	// TODO(huang-jl) use oci.WithRootFSPath() to use costomized rootfs
+  // By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := client.NewContainer(
 		ctx,
 		instanceID,
@@ -213,7 +216,8 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 		return "", err
 	}
 
-	//TODO(huang-jl) we take over the control of container
+	// By huang-jl: we do not take over the control of container, since it will
+	// broken the containerd
 	// if _, err = container.TakeOver(ctx, -1); err != nil {
 	// 	return errors.Wrapf(err, "take over container %s failed", instanceID)
 	// }
@@ -225,20 +229,14 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 	return instanceID, err
 }
 
-// couple of things that needed to take care:
-//  1. TODO(huang-jl) tune the rootfs of the container to matched the service in request
-//  2. TODO(huang-jl) tune the cgroup paramters, here we only care about memory limit
-//     (let criu change cgroup paramters is also ok ?)
+// By huang-jl: CRIU will restore the property of cgroup, we do not need to care about that here.
 func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
 	checkpointDir string, candidate ContainerInfo, alwaysPull bool) (string, error) {
 	wrapLambdaManagerErr := func(e error) error {
 		return errors.Wrap(e, "switcher update lambdaManager failed")
 	}
 
-	_, err := prepull(ctx, req, client, alwaysPull)
-	if err != nil {
-		return "", err
-	}
+	// _, err := prepull(ctx, req, client, alwaysPull) // [7.5ms]
 	if len(req.Secrets) > 0 {
 		return "", fmt.Errorf("switch do not support secrets for now")
 	}
@@ -264,7 +262,8 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 	config := switcher.SwitcherConfig{
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
-		CRIULogLevel:      4,
+		// TODO(huang-jl) for better performance, we need modify it to 0
+		CRIULogLevel: 4,
 	}
 	switcher, err := switcher.SwitchFor(serviceName, checkpointDir, int(candidate.pid), config)
 	if err != nil {

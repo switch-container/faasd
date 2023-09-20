@@ -148,6 +148,7 @@ func PrepareImage(ctx context.Context, client *containerd.Client, imageName, sna
 	}
 
 	var image containerd.Image
+  log.Printf("pull always: %v", pullAlways)
 	if pullAlways {
 		img, err := pullImage(ctx, client, resolver, imageName)
 		if err != nil {
