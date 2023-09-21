@@ -1,8 +1,11 @@
 package switcher
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -40,6 +43,44 @@ type CriuOpts struct {
 	CgroupFD                uintptr            // File Descriptor to Set when exec CRIU swrk
 }
 
+func bindLoggingPipe(pipe io.Reader, output io.Writer) {
+	logFlags := log.Flags()
+	prefix := log.Prefix()
+	logger := log.New(output, prefix, logFlags)
+	scanner := bufio.NewScanner(pipe)
+	go func() {
+		for scanner.Scan() {
+			logger.Printf(scanner.Text())
+			if err := scanner.Err(); err != nil {
+				log.Printf("Error scanning: %s", err)
+			}
+		}
+	}()
+}
+
+func redirectSwitchOutput(cmd *exec.Cmd, opts *CriuOpts) error {
+	cmdOut, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	cmdErr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	outFile, err := os.Create(filepath.Join(opts.WorkDirectory, "stdout"))
+	if err != nil {
+		return err
+	}
+	errFile, err := os.Create(filepath.Join(opts.WorkDirectory, "stderr"))
+	if err != nil {
+		return err
+	}
+	bindLoggingPipe(cmdOut, outFile)
+	bindLoggingPipe(cmdErr, errFile)
+
+	return nil
+}
+
 func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFiles []*os.File) error {
 	start := time.Now()
 	if opts == nil {
@@ -68,9 +109,14 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	args := []string{"swrk", "3"}
 	cmd := exec.Command("criu", args...)
 
-	// TODO (huang-jl) consider stdout
-	// close the stdin
+	// By huang-jl: if want to see the ouput from container after restoring
+	// then use redirectSwitchOutput(). By default, the stdout, stderr will
+	// be directed to /dev/null
 	cmd.Stdin = nil
+	// if err := redirectSwitchOutput(cmd, opts); err != nil {
+	// 	return err
+	// }
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		UseCgroupFD: true,
 		CgroupFD:    int(opts.CgroupFD),

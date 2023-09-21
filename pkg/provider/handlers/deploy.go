@@ -176,22 +176,22 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 		memory.Limit = &v
 	}
 
-	appOverlay, err := rootfsManager.PrepareAppOverlay(serviceName, id)
-	if err != nil {
-		return "", errors.Wrapf(err, "prepare app overlay when classicalDeploy for %s failed", instanceID)
-	}
-	// we prepare an overlayfs to mount into container
-	// so that it can be read-write
-	mounts = append(mounts, specs.Mount{
-		Destination: "/home/app",
-		Type:        "bind",
-		Source:      appOverlay,
-		Options:     []string{"bind"},
-	})
+	// appOverlay, err := rootfsManager.PrepareAppOverlay(serviceName, id)
+	// if err != nil {
+	// 	return "", errors.Wrapf(err, "prepare app overlay when classicalDeploy for %s failed", instanceID)
+	// }
+	// // we prepare an overlayfs to mount into container
+	// // so that it can be read-write
+	// mounts = append(mounts, specs.Mount{
+	// 	Destination: "/home/app",
+	// 	Type:        "bind",
+	// 	Source:      appOverlay,
+	// 	Options:     []string{"bind"},
+	// })
 
 	log.Println(mounts)
 
-  // By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
+	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := client.NewContainer(
 		ctx,
 		instanceID,
@@ -295,10 +295,14 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 	return GetInstanceID(serviceName, id), err
 }
 
-// Return the ID of the instance, which can be used for post request
+// Return the ID of the instance, which can be used for sending request
 func deploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
 	cni gocni.CNI, secretMountPath, checkpointDir string, alwaysPull bool) (string, error) {
-	// first check whether we have checkpoint
+	// check whether force classicalDeploy
+	if req.ForceClassicalDeploy {
+		return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
+	}
+	// check whether we have checkpoint
 	if !hasCheckpoint(req.Service) {
 		return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
 	}
