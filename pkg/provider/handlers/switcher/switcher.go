@@ -109,26 +109,39 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	var extraFiles []*os.File
 
 	start := time.Now()
+	// [40us]
 	if err = handleSwitchNamespaces(rpcOpts, pid, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle switch namespace failed")
 	}
+	log.Printf("handle switch ns %s, ", time.Since(start))
 
+	start = time.Now()
+	// [10us]
 	if err = handlePseudoMMDrv(rpcOpts, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle pseudo mm drv failed")
 	}
+	log.Printf("handle pseudo mm drv %s, ", time.Since(start))
 
-	// [20us]
+	start = time.Now()
+	// [50us]
 	if err = applyCgroup(pid, rpcOpts, criuOpts); err != nil {
 		return errors.Wrap(err, "apply cgroup failed")
 	}
+	log.Printf("apply cgroup %s, ", time.Since(start))
 
+	// TODO(huang-jl) kill process in another goroutine (async)
+	// kill process sometimes takes about 4ms - 5ms.
+	//
+	// But pay attention: if we do it async, we have to use another
+	// port (e.g., 5001) for restored process. Or else it may conflict
+	// with original process in the same net namespace.
+	start = time.Now()
 	if err = syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		return errors.Wrap(err, "kill original process failed")
+		return errors.Wrapf(err, "kill original process %d failed", pid)
 	}
+	log.Printf("kill original process %d took %s\n", pid, time.Since(start))
 
-	log.Printf("handle ns + apply cgroup + kill %d took %s", pid, time.Since(start))
-
-	// resolve + unmarshal + set inherit fd: [20us]
+	// log.Printf("handle ns + apply cgroup + kill %d took %s", pid, time.Since(start))
 
 	// the descriptors handling is copying from runc checkpoint
 	var (
@@ -151,11 +164,18 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		}
 	}
 
+	// here we prepare for rootfs
+	for _, c := range switcher.config.Callbacks {
+		if err = c(); err != nil {
+			return errors.Wrap(err, "execute config callback failed")
+		}
+	}
+
 	start = time.Now()
 	if err = switcher.criuSwrk(&criurpc.CriuReq{Type: &t, Opts: rpcOpts}, criuOpts, extraFiles); err != nil {
 		return errors.Wrapf(err, "criuSwrk failed")
 	}
-	log.Printf("ciruSwrk total took %s", time.Since(start))
+	log.Printf("criuSwrk total took %s", time.Since(start))
 
 	return nil
 }
@@ -221,6 +241,7 @@ func applyCgroup(pid int, rpcOpts *criurpc.CriuOpts, criuOpts *CriuOpts) error {
 		return err
 	}
 
+	log.Printf("cgroup paths: %+v\n", cgroupsPaths)
 	for c, p := range cgroupsPaths {
 		cgroupRoot := &criurpc.CgroupRoot{
 			Ctrl: proto.String(c),

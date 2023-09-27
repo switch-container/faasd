@@ -1,9 +1,10 @@
 package switcher
 
 type SwitcherConfig struct {
-	CRIUWorkDirectory string `json:"CRIUWorkDirectory"`
-	CRIULogFileName   string `json:"CRIULogFileName"`
-	CRIULogLevel      int    `json:"CRIULogLevel"`
+	CRIUWorkDirectory string
+	CRIULogFileName   string
+	CRIULogLevel      int
+	Callbacks         []func() error
 }
 
 // example config value

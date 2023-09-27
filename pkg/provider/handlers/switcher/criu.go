@@ -82,6 +82,7 @@ func redirectSwitchOutput(cmd *exec.Cmd, opts *CriuOpts) error {
 }
 
 func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFiles []*os.File) error {
+	begin_ := time.Now()
 	start := time.Now()
 	if opts == nil {
 		return fmt.Errorf("CriuOpts cannot be null")
@@ -128,8 +129,10 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	}
 
 	// [from beginning to here: 830us]
-	logEntry := logrus.WithField("prepare cmd", time.Since(start).String())
-
+	// logEntry := logrus.WithField("prepare cmd", time.Since(start).String())
+	log.Printf("prepare cmd spent %s, ", time.Since(start))
+	start = time.Now()
+	log.Printf("start criu swrk ts: %d", start.UnixMicro())
 	// [start itself: 391us]
 	if err := cmd.Start(); err != nil {
 		return err
@@ -144,7 +147,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	var criuProcessState *os.ProcessState
 	// [this defer: < 1 us]
 	defer func() {
-		start := time.Now()
+		start_ := time.Now()
 		if criuProcessState == nil {
 			criuClientCon.Close()
 			_, err := criuProcess.Wait()
@@ -152,7 +155,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 				logrus.Warnf("wait on criuProcess returned %v", err)
 			}
 		}
-		logrus.Debugf("defer function took %s", time.Since(start))
+		log.Printf("defer function took %s", time.Since(start_))
 	}()
 
 	logrus.Debugf("Using CRIU in %s mode", req.GetType().String())
@@ -174,17 +177,22 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	// 	}
 	// }
 	// logEntry = logEntry.WithField("reflectReq", time.Since(start).String())
-	start = time.Now()
 
 	data, err := proto.Marshal(req)
 	if err != nil {
 		return err
 	}
 
+	log.Printf("proto MArshal req since start elapsed %s\n", time.Since(start))
+
+	start = time.Now()
 	_, err = criuClientCon.Write(data)
 	if err != nil {
 		return err
 	}
+
+	log.Printf("write request elapsed %s\n", time.Since(start))
+	start = time.Now()
 
 	buf := make([]byte, 10*4096)
 	oob := make([]byte, 4096)
@@ -225,6 +233,8 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			logrus.Debugf("Feature check says: %s", resp)
 			// criuFeatures = resp.GetFeatures()
 		case t == criurpc.CriuReqType_NOTIFY:
+			// log.Printf("until recv notify spent %s, ", time.Since(start))
+			// start = time.Now()
 			if err := switcher.criuNotifications(resp, cmd, opts, oob[:oobn]); err != nil {
 				return err
 			}
@@ -243,6 +253,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			}
 			continue
 		case t == criurpc.CriuReqType_RESTORE:
+			log.Printf("receive RESTORE response from start process %s", time.Since(start))
 		case t == criurpc.CriuReqType_DUMP:
 		case t == criurpc.CriuReqType_PRE_DUMP:
 		default:
@@ -252,6 +263,9 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		break
 	}
 
+	log.Printf("break from criu conn loop spent %s", time.Since(start))
+
+	start = time.Now()
 	_ = criuClientCon.CloseWrite()
 	// cmd.Wait() waits cmd.goroutines which are used for proxying file descriptors.
 	// Here we want to wait only the CRIU process.
@@ -260,7 +274,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		return err
 	}
 
-	logEntry.Debugf("wait for criu %s", time.Since(start))
+	log.Printf("wait for criu %s", time.Since(start))
 
 	// In pre-dump mode CRIU is in a loop and waits for
 	// the final DUMP command.
@@ -272,6 +286,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	if !criuProcessState.Success() && *req.Type != criurpc.CriuReqType_PRE_DUMP {
 		return fmt.Errorf("criu failed: %s\nlog file: %s", criuProcessState.String(), logPath)
 	}
+	log.Printf("criuSwrk main part took %s", time.Since(begin_))
 	return nil
 }
 
@@ -281,7 +296,7 @@ func (switcher *Switcher) criuNotifications(resp *criurpc.CriuResp, cmd *exec.Cm
 		return fmt.Errorf("invalid response: %s", resp.String())
 	}
 	script := notify.GetScript()
-	logrus.Debugf("notify: %s\n", script)
+	log.Printf("notify: %s\n", script)
 	switch script {
 	case "post-restore":
 		pid := notify.GetPid()

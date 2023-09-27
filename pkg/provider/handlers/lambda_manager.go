@@ -30,17 +30,10 @@ type ContainerInfo struct {
 	pid       int
 	status    ContainerStatus
 	IpAddress string
-	rootfs    ContainerRootfsInfo
+	rootfs    OverlayInfo
 	cniID     string
-}
-
-type ContainerRootfsInfo struct {
-	// rootfs mount point in host machine
-	merged string
-	// upper directory of rootfs (overlayfs)
-	upper string
-	// work direcotry of rootfs (overlayfs)
-	work string
+	// TODO(huang-jl) Add app overlayInfo
+	appOverlay *OverlayInfo
 }
 
 type ContainerStatus int
@@ -142,7 +135,7 @@ func (m *LambdaManager) UpdateInstance(serviceName string, id uint64, updater In
 			res = *instance
 			return
 		} else {
-			err = errors.Wrapf(ErrNotFoundTargetInstance, "update %s - %d", serviceName, id)
+			err = errors.Wrapf(ErrNotFoundTargetInstance, "update %s-%d", serviceName, id)
 			return
 		}
 	}

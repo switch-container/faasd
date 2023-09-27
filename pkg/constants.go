@@ -26,7 +26,12 @@ const (
 	FaasdAppUpperDirPrefix = "/var/lib/faasd/app/upper"
 	FaasdAppMergeDirPrefix = "/var/lib/faasd/app/merged"
 
-  // have to use our new kernel
-	PseudoMMDrvPath               = "/dev/pseudo_mm"
-	CRIUPseudoMMDrvInheritID      = "pseudo-mm-drv"
+	// have to use our new kernel
+	PseudoMMDrvPath          = "/dev/pseudo_mm"
+	CRIUPseudoMMDrvInheritID = "pseudo-mm-drv"
+
+	// The initial app overlay cache size for each service
+	AppOverlayCacheInitNum = 1
+	// The upper bound of app overlay cache size for each service
+	AppOverlayCacheLimit = 16
 )

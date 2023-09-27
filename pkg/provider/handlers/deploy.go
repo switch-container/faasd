@@ -191,13 +191,22 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 
 	log.Println(mounts)
 
+	wrapper := func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
+		start := time.Now()
+		defer func() {
+			log.Printf("Snapshot prepare() spent %s\n", time.Since(start))
+		}()
+		return containerd.WithNewSnapshot(instanceID+"-snapshot", image)(ctx, client, c)
+	}
+
 	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := client.NewContainer(
 		ctx,
 		instanceID,
 		containerd.WithImage(image),
 		containerd.WithSnapshotter(snapshotter),
-		containerd.WithNewSnapshot(instanceID+"-snapshot", image),
+		// containerd.WithNewSnapshot(instanceID+"-snapshot", image),
+		wrapper,
 		containerd.WithNewSpec(oci.WithImageConfig(image),
 			oci.WithHostname(instanceID),
 			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
@@ -253,17 +262,23 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 		}
 	}()
 
-	start := time.Now()
-	if err := rootfsManager.PrepareSwitchRootfs(serviceName, id, candidate); err != nil {
-		return "", err
+	var appOverlay *OverlayInfo
+	fsCallbacks := func() error {
+		start := time.Now()
+		appOverlay, err = rootfsManager.PrepareSwitchRootfs(serviceName, candidate)
+		if err != nil {
+			return err
+		}
+		log.Printf("PrepareSwitchRootfs spent %s\n", time.Since(start))
+		return nil
 	}
-	log.Printf("PrepareSwitchRootfs spent %s\n", time.Since(start))
 
 	config := switcher.SwitcherConfig{
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
 		CRIULogLevel: 4,
+		Callbacks:    []func() error{fsCallbacks},
 	}
 	switcher, err := switcher.SwitchFor(serviceName, checkpointDir, int(candidate.pid), config)
 	if err != nil {
@@ -282,9 +297,14 @@ func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *con
 		return "", fmt.Errorf("switchDeploy get wierd process id %d", newPid)
 	}
 
+	if appOverlay == nil {
+		return "", fmt.Errorf("appOverlay is null when switch deploy!\n")
+	}
+
 	_, err = lambdaManager.UpdateInstance(serviceName, id, func(info *ContainerInfo) error {
 		info.pid = newPid
 		info.status = FINISHED
+		info.appOverlay = appOverlay
 		// new lambda instance share the same rootfs
 		// and ipaddress as candidate
 		info.IpAddress = candidate.IpAddress
@@ -462,9 +482,10 @@ func initContainerInfo(ctx context.Context, client *containerd.Client, ctr conta
 		info.serviceName = serviceName
 		info.id = id
 		info.pid = int(pid)
-		info.rootfs.work = rootOverlay.workdir
-		info.rootfs.upper = rootOverlay.upperdir
-		info.rootfs.merged = rootOverlay.mergedir
+		// No need to save lower dirs, it is too large
+		info.rootfs.work = rootOverlay.work
+		info.rootfs.upper = rootOverlay.upper
+		info.rootfs.merged = rootOverlay.merged
 		info.status = FINISHED
 		info.IpAddress = ip
 		info.cniID = cniID
