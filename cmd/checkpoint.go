@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/openfaas/faasd/pkg"
 	faasd "github.com/openfaas/faasd/pkg"
-	"github.com/openfaas/faasd/pkg/provider/handlers"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -44,11 +44,26 @@ type checkpointInfo struct {
 	process     containerd.Process
 }
 
+var functionRegex = regexp.MustCompile(`([-a-zA-Z_0-9.]*?)(-\d+)?$`)
+
+func parseLambdaName(ctrName string) (string, error) {
+	var (
+		serviceName string
+	)
+	temp := functionRegex.FindStringSubmatch(ctrName)
+	if len(temp) == 2 || len(temp) == 3 {
+		serviceName = temp[1]
+	} else {
+		return serviceName, fmt.Errorf("invalid ctr name pattern: %s", ctrName)
+	}
+	return serviceName, nil
+}
+
 func initCheckpointInfo(client *containerd.Client, ctrId string, config *checkpointConfig) (*checkpointInfo, error) {
 	var res *checkpointInfo
 
 	ctx := namespaces.WithNamespace(context.Background(), config.namespace)
-	serviceName, _, err := handlers.ParseFunctionName(ctrId)
+	serviceName, err := parseLambdaName(ctrId)
 	if err != nil {
 		return res, errors.Wrapf(err, "invalid container id %s", ctrId)
 	}

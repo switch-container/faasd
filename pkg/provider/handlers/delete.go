@@ -15,6 +15,7 @@ import (
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
 	cninetwork "github.com/openfaas/faasd/pkg/cninetwork"
+	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/service"
 )
 
@@ -48,7 +49,7 @@ func MakeDeleteHandler(client *containerd.Client, cni gocni.CNI) func(w http.Res
 		}
 
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
+		valid, err := provider.ValidNamespace(client.NamespaceService(), namespace)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

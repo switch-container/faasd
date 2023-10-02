@@ -1,4 +1,4 @@
-package handlers
+package provider
 
 import (
 	"fmt"
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/mount"
-	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
@@ -45,20 +44,19 @@ type RootfsManager struct {
 	appOverlayCh chan string
 }
 
-var rootfsManager RootfsManager
-
-// we do not use init() directly here
-// since `faasd collect` will also call init()
-func InitMountModule() {
-	rootfsManager.packageBase = pkg.FaasdPackageDirPrefix
-	rootfsManager.appPkgs = make(map[string]bool)
-	rootfsManager.cache = make(map[string]*AppOverlayCache)
-	rootfsManager.appOverlayCh = make(chan string, 40)
+// NOTE by huang-jl: This method should only be called once
+func NewRootfsManager() (*RootfsManager, error) {
+	m := &RootfsManager{
+		packageBase:  pkg.FaasdPackageDirPrefix,
+		appPkgs:      make(map[string]bool),
+		cache:        make(map[string]*AppOverlayCache),
+		appOverlayCh: make(chan string, 40),
+	}
 
 	// try umount old overlay if possible
 	items, err := os.ReadDir(pkg.FaasdAppMergeDirPrefix)
 	if err != nil && !os.IsNotExist(err) {
-		panic(fmt.Sprintf("read dir %s failed", pkg.FaasdAppMergeDirPrefix))
+		return nil, fmt.Errorf("read dir %s failed", pkg.FaasdAppMergeDirPrefix)
 	}
 	for _, item := range items {
 		p := path.Join(pkg.FaasdAppMergeDirPrefix, item.Name())
@@ -68,32 +66,32 @@ func InitMountModule() {
 	for _, dir := range [3]string{pkg.FaasdAppWorkDirPrefix,
 		pkg.FaasdAppUpperDirPrefix, pkg.FaasdAppMergeDirPrefix} {
 		if err = os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
-			panic(fmt.Sprintf("error when clean %s dir %s", dir, err))
+			return nil, fmt.Errorf("error when clean %s dir %s", dir, err)
 		}
 		if err = os.MkdirAll(dir, 0755); err != nil {
-			panic(fmt.Sprintf("mkdir %s failed", dir))
+			return nil, fmt.Errorf("mkdir %s failed", dir)
 		}
 	}
-	if _, err := os.Stat(rootfsManager.packageBase); err != nil {
+	if _, err := os.Stat(m.packageBase); err != nil {
 		if os.IsNotExist(err) {
-			if err = os.MkdirAll(rootfsManager.packageBase, 0755); err != nil {
-				panic(fmt.Sprintf("mkdir %s failed %s", rootfsManager.packageBase, err))
+			if err = os.MkdirAll(m.packageBase, 0755); err != nil {
+				return nil, fmt.Errorf("mkdir %s failed %s", m.packageBase, err)
 			}
 		} else {
-			panic(fmt.Sprintf("stat %s failed %s", rootfsManager.packageBase, err))
+			return nil, fmt.Errorf("stat %s failed %s", m.packageBase, err)
 		}
 	}
 
 	// init the rootfsManager.appPkgs and appOverlay cache
-	appPkgs, err := os.ReadDir(rootfsManager.packageBase)
+	appPkgs, err := os.ReadDir(m.packageBase)
 	if err != nil {
-		panic(fmt.Sprintf("Read dirs of %s failed: %s", rootfsManager.packageBase, err))
+		return nil, fmt.Errorf("Read dirs of %s failed: %s", m.packageBase, err)
 	}
 	for _, appPkg := range appPkgs {
-		rootfsManager.appPkgs[appPkg.Name()] = true
-		rootfsManager.cache[appPkg.Name()] = &AppOverlayCache{}
-		if err := rootfsManager.fillAppOverlayCache(appPkg.Name(), pkg.AppOverlayCacheInitNum); err != nil {
-			panic(fmt.Sprintf("fill app overlay for %s failed", appPkg.Name()))
+		m.appPkgs[appPkg.Name()] = true
+		m.cache[appPkg.Name()] = &AppOverlayCache{}
+		if err := m.fillAppOverlayCache(appPkg.Name(), pkg.AppOverlayCacheInitNum); err != nil {
+			return nil, fmt.Errorf("fill app overlay for %s failed", appPkg.Name())
 		}
 		log.Printf("Init app pkgs %s\n", appPkg.Name())
 	}
@@ -101,25 +99,26 @@ func InitMountModule() {
 	// TODO(huang-jl) This is a simple cache fill strategy
 	// use one will fill two more until reach an upper bound
 	go func() {
-		for serviceName := range rootfsManager.appOverlayCh {
-			rootfsManager.mu.Lock()
-			cache, exist := rootfsManager.cache[serviceName]
+		for serviceName := range m.appOverlayCh {
+			m.mu.Lock()
+			cache, exist := m.cache[serviceName]
 			if !exist {
 				log.Printf("Err: cannot find %s in cache\n", serviceName)
-				rootfsManager.mu.Unlock()
+				m.mu.Unlock()
 				continue
 			}
 			if len(cache.data) >= pkg.AppOverlayCacheLimit {
-				rootfsManager.mu.Unlock()
+				m.mu.Unlock()
 				continue
 			}
-			rootfsManager.mu.Unlock()
+			m.mu.Unlock()
 
-			if err := rootfsManager.fillAppOverlayCache(serviceName, 2); err != nil {
+			if err := m.fillAppOverlayCache(serviceName, 2); err != nil {
 				log.Printf("[RootfsManager] fill app overlay cache for %s failed: %s\n", serviceName, err)
 			}
 		}
 	}()
+	return m, nil
 }
 
 // TODO(huang-jl) clear app overlay's writable layer
@@ -212,7 +211,7 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 	appOverlayID := m.allocateAppOverlayID(serviceName)
 	start = time.Now()
 	name := GetInstanceID(serviceName, appOverlayID)
-	// make dir
+
 	upperdir := path.Join(pkg.FaasdAppUpperDirPrefix, name)
 	workdir := path.Join(pkg.FaasdAppWorkDirPrefix, name)
 	mergedir := path.Join(pkg.FaasdAppMergeDirPrefix, name)
@@ -246,7 +245,7 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 // When switching rootfs of an existing (or old) container:
 //  1. umount the old bind mount
 //  2. umount the old overlay async
-//  3. mount a new app's overlay
+//  3. mount a new app's overlay (in mose cases from a app overlay pool)
 //  4. bind mount this new overlay into the rootfs of old container
 //
 // The reason:
@@ -255,16 +254,16 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 //  2. Why we use overlay instead of bind mount lowerdir directly:
 //     We need read-write capability of the dir.
 //
-// Note by huang-jl add overlayfs pool:
+// NOTE by huang-jl add overlayfs pool:
 // I find this method sometimes can cause about 10ms overhead.
 // However, even using overlay pool, a single bind mount sometimes can
-// spend about 10ms
-func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo ContainerInfo) (*OverlayInfo, error) {
+// spend about 10ms in qemu.
+func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInstance) (*OverlayInfo, error) {
 	start := time.Now()
 	targetBindPath := path.Join(oldInfo.rootfs.merged, "home/app")
 	if oldInfo.appOverlay != nil {
 		unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
-		m.putAppOverlayToCache(oldInfo.serviceName, oldInfo.appOverlay)
+		m.putAppOverlayToCache(oldInfo.LambdaName, oldInfo.appOverlay)
 		oldInfo.appOverlay = nil
 	}
 	log.Printf("unmount old app dir spent %s\n", time.Since(start))
@@ -296,6 +295,7 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo Containe
 }
 
 // parse rootfs info from snapshotter (e.g., Mounts() or View() or Prepare())
+// NOTE by huang-jl: do not parse lowerdir here since it is useless and too large
 func parseRootFromSnapshotter(ns string, containerID string, mounts []mount.Mount) (OverlayInfo, error) {
 	var res OverlayInfo
 	if len(mounts) != 1 || mounts[0].Source != "overlay" || mounts[0].Type != "overlay" {
@@ -305,38 +305,11 @@ func parseRootFromSnapshotter(ns string, containerID string, mounts []mount.Moun
 	for _, opt := range m.Options {
 		if upperdir, ok := strings.CutPrefix(opt, "upperdir="); ok {
 			res.upper = upperdir
-		}
-		if workdir, ok := strings.CutPrefix(opt, "workdir="); ok {
+		} else if workdir, ok := strings.CutPrefix(opt, "workdir="); ok {
 			res.work = workdir
-		}
-		if lowerdirs, ok := strings.CutPrefix(opt, "lowerdir="); ok {
-			res.lower = lowerdirs
 		}
 	}
 	res.merged = fmt.Sprintf("/run/containerd/io.containerd.runtime.v2.task/%s/%s/rootfs",
 		ns, containerID)
 	return res, nil
-}
-
-// getOSMounts provides a mount for os-specific files such
-// as the hosts file and resolv.conf
-func getOSMounts() []specs.Mount {
-	// Prior to hosts_dir env-var, this value was set to
-	// os.Getwd()
-	hostsDir := "/var/lib/faasd"
-	mounts := []specs.Mount{}
-	mounts = append(mounts, specs.Mount{
-		Destination: "/etc/resolv.conf",
-		Type:        "bind",
-		Source:      path.Join(hostsDir, "resolv.conf"),
-		Options:     []string{"rbind", "ro"},
-	})
-
-	mounts = append(mounts, specs.Mount{
-		Destination: "/etc/hosts",
-		Type:        "bind",
-		Source:      path.Join(hostsDir, "hosts"),
-		Options:     []string{"rbind", "ro"},
-	})
-	return mounts
 }

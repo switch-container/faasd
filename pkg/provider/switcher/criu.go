@@ -15,6 +15,8 @@ import (
 	"time"
 
 	criurpc "github.com/checkpoint-restore/go-criu/v5/rpc"
+	"github.com/openfaas/faasd/pkg"
+	"github.com/openfaas/faasd/pkg/metrics"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -82,7 +84,6 @@ func redirectSwitchOutput(cmd *exec.Cmd, opts *CriuOpts) error {
 }
 
 func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFiles []*os.File) error {
-	begin_ := time.Now()
 	start := time.Now()
 	if opts == nil {
 		return fmt.Errorf("CriuOpts cannot be null")
@@ -128,13 +129,16 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		cmd.ExtraFiles = append(cmd.ExtraFiles, extraFiles...)
 	}
 
-	// [from beginning to here: 830us]
+	// [from beginning to here: xx - xxx us]
 	// logEntry := logrus.WithField("prepare cmd", time.Since(start).String())
-	log.Printf("prepare cmd spent %s, ", time.Since(start))
 	start = time.Now()
-	log.Printf("start criu swrk ts: %d", start.UnixMicro())
+	// log.Printf("start criu swrk ts: %d", start.UnixMicro())
 	// [start itself: 391us]
 	if err := cmd.Start(); err != nil {
+		return err
+	}
+	err = metrics.GetMetricLogger().Emit(pkg.CRIUSwrkCmdStartMetric, switcher.checkpoint, time.Since(start))
+	if err != nil {
 		return err
 	}
 
@@ -147,7 +151,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	var criuProcessState *os.ProcessState
 	// [this defer: < 1 us]
 	defer func() {
-		start_ := time.Now()
+		// start_ := time.Now()
 		if criuProcessState == nil {
 			criuClientCon.Close()
 			_, err := criuProcess.Wait()
@@ -155,7 +159,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 				logrus.Warnf("wait on criuProcess returned %v", err)
 			}
 		}
-		log.Printf("defer function took %s", time.Since(start_))
+		// log.Printf("defer function took %s", time.Since(start_))
 	}()
 
 	logrus.Debugf("Using CRIU in %s mode", req.GetType().String())
@@ -182,8 +186,6 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	if err != nil {
 		return err
 	}
-
-	log.Printf("proto MArshal req since start elapsed %s\n", time.Since(start))
 
 	start = time.Now()
 	_, err = criuClientCon.Write(data)
@@ -286,7 +288,6 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	if !criuProcessState.Success() && *req.Type != criurpc.CriuReqType_PRE_DUMP {
 		return fmt.Errorf("criu failed: %s\nlog file: %s", criuProcessState.String(), logPath)
 	}
-	log.Printf("criuSwrk main part took %s", time.Since(begin_))
 	return nil
 }
 

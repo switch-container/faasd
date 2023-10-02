@@ -48,9 +48,9 @@ func MakeSecretHandler(store provider.Labeller, mountPath string) func(w http.Re
 
 func listSecrets(store provider.Labeller, w http.ResponseWriter, r *http.Request, mountPath string) {
 
-	lookupNamespace := getRequestNamespace(readNamespaceFromQuery(r))
+	lookupNamespace := provider.GetRequestNamespace(provider.ReadNamespaceFromQuery(r))
 	// Check if namespace exists, and it has the openfaas label
-	valid, err := validNamespace(store, lookupNamespace)
+	valid, err := provider.ValidNamespace(store, lookupNamespace)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -61,7 +61,7 @@ func listSecrets(store provider.Labeller, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	mountPath = getNamespaceSecretMountPath(mountPath, lookupNamespace)
+	mountPath = provider.GetNamespaceSecretMountPath(mountPath, lookupNamespace)
 
 	files, err := os.ReadDir(mountPath)
 	if os.IsNotExist(err) {
@@ -101,8 +101,8 @@ func createSecret(w http.ResponseWriter, r *http.Request, mountPath string) {
 	}
 
 	log.Printf("[secret] is valid: %q", secret.Name)
-	namespace := getRequestNamespace(secret.Namespace)
-	mountPath = getNamespaceSecretMountPath(mountPath, namespace)
+	namespace := provider.GetRequestNamespace(secret.Namespace)
+	mountPath = provider.GetNamespaceSecretMountPath(mountPath, namespace)
 
 	err = os.MkdirAll(mountPath, secretDirPermission)
 	if err != nil {
@@ -133,8 +133,8 @@ func deleteSecret(w http.ResponseWriter, r *http.Request, mountPath string) {
 		return
 	}
 
-	namespace := getRequestNamespace(readNamespaceFromQuery(r))
-	mountPath = getNamespaceSecretMountPath(mountPath, namespace)
+	namespace := provider.GetRequestNamespace(provider.ReadNamespaceFromQuery(r))
+	mountPath = provider.GetNamespaceSecretMountPath(mountPath, namespace)
 
 	err = os.Remove(path.Join(mountPath, secret.Name))
 

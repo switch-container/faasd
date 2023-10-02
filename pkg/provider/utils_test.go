@@ -1,4 +1,4 @@
-package handlers
+package provider
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ func Test_getRequestNamespace(t *testing.T) {
 
 	for _, tc := range tables {
 		t.Run(tc.name, func(t *testing.T) {
-			actualNamespace := getRequestNamespace(tc.requestNamespace)
+			actualNamespace := GetRequestNamespace(tc.requestNamespace)
 			if actualNamespace != tc.expectedNamespace {
 				t.Errorf("Want: %s, got: %s", actualNamespace, tc.expectedNamespace)
 			}
@@ -29,7 +29,7 @@ func Test_getRequestNamespace(t *testing.T) {
 	}
 }
 
-func Test_getNamespaceSecretMountPath(t *testing.T) {
+func Test_GetNamespaceSecretMountPath(t *testing.T) {
 	userSecretPath := "/var/openfaas/secrets"
 	tables := []struct {
 		name               string
@@ -42,7 +42,7 @@ func Test_getNamespaceSecretMountPath(t *testing.T) {
 
 	for _, tc := range tables {
 		t.Run(tc.name, func(t *testing.T) {
-			actualNamespace := getNamespaceSecretMountPath(userSecretPath, tc.requestNamespace)
+			actualNamespace := GetNamespaceSecretMountPath(userSecretPath, tc.requestNamespace)
 			if actualNamespace != tc.expectedSecretPath {
 				t.Errorf("Want: %s, got: %s", actualNamespace, tc.expectedSecretPath)
 			}
@@ -66,7 +66,7 @@ func Test_readNamespaceFromQuery(t *testing.T) {
 			url := fmt.Sprintf("/test?namespace=%s", tc.queryNamespace)
 			r := httptest.NewRequest(http.MethodGet, url, nil)
 
-			actualNamespace := readNamespaceFromQuery(r)
+			actualNamespace := ReadNamespaceFromQuery(r)
 			if actualNamespace != tc.expectedNamespace {
 				t.Errorf("Want: %s, got: %s", actualNamespace, tc.expectedNamespace)
 			}

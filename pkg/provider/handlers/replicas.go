@@ -7,6 +7,7 @@ import (
 	"github.com/containerd/containerd"
 	"github.com/gorilla/mux"
 	"github.com/openfaas/faas-provider/types"
+	"github.com/openfaas/faasd/pkg/provider"
 )
 
 func MakeReplicaReaderHandler(client *containerd.Client) func(w http.ResponseWriter, r *http.Request) {
@@ -14,10 +15,10 @@ func MakeReplicaReaderHandler(client *containerd.Client) func(w http.ResponseWri
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		functionName := vars["name"]
-		lookupNamespace := getRequestNamespace(readNamespaceFromQuery(r))
+		lookupNamespace := provider.GetRequestNamespace(provider.ReadNamespaceFromQuery(r))
 
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), lookupNamespace)
+		valid, err := provider.ValidNamespace(client.NamespaceService(), lookupNamespace)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

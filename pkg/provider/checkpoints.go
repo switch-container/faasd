@@ -1,8 +1,7 @@
-package handlers
+package provider
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -10,33 +9,34 @@ import (
 	"github.com/openfaas/faasd/pkg"
 )
 
-type checkpointCache struct {
+type CheckpointCache struct {
 	data map[string]bool
 	rw   sync.RWMutex
-}
 
-var cache *checkpointCache
+	checkpointDir string
+}
 
 // we do not use init() directly here
 // since `faasd collect` will also call init
-func InitCheckpointModule() {
-	cache = &checkpointCache{
-		data: make(map[string]bool),
+func NewCheckpointCache() *CheckpointCache {
+	cache := &CheckpointCache{
+		data:          make(map[string]bool),
+		checkpointDir: pkg.FaasdCheckpointDirPrefix,
 	}
-	cache.fillCache()
+	cache.FillCache()
+	return cache
 }
 
-func (c *checkpointCache) lookup(serviceName string) bool {
+func (c *CheckpointCache) Lookup(serviceName string) bool {
 	c.rw.RLock()
 	defer c.rw.RUnlock()
-	valid, ok := cache.data[serviceName]
+	valid, ok := c.data[serviceName]
 	return valid && ok
 }
 
-func (c *checkpointCache) fillCache() error {
-	checkpointDir := pkg.FaasdCheckpointDirPrefix
+func (c *CheckpointCache) FillCache() error {
 	// Check if namespace exists, and it has the openfaas label
-	items, err := os.ReadDir(checkpointDir)
+	items, err := os.ReadDir(c.checkpointDir)
 	if err != nil {
 		// we do not have any checkpoints for now
 		if os.IsNotExist(err) {
@@ -54,13 +54,13 @@ func (c *checkpointCache) fillCache() error {
 	// update from dir
 	for _, item := range items {
 		if item.Type().IsDir() {
-			cache.data[item.Name()] = true
+			c.data[item.Name()] = true
 		}
 	}
 	return nil
 }
 
-func (c *checkpointCache) list() []string {
+func (c *CheckpointCache) List() []string {
 	var res []string
 	c.rw.RLock()
 	defer c.rw.RUnlock()
@@ -73,20 +73,10 @@ func (c *checkpointCache) list() []string {
 	return res
 }
 
-func hasCheckpoint(serviceName string) bool {
-	if cache.lookup(serviceName) {
-		return true
-	}
-	if err := cache.fillCache(); err != nil {
-		log.Printf("update checkpoint cache failed %s", err)
-		return false
-	}
-	return cache.lookup(serviceName)
-}
-
-func MakeCheckpointReader() func(w http.ResponseWriter, r *http.Request) {
+func MakeCheckpointReader(m *LambdaManager) func(w http.ResponseWriter, r *http.Request) {
+	c := m.Runtime.checkpointCache
 	return func(w http.ResponseWriter, r *http.Request) {
-		checkpoints := cache.list()
+		checkpoints := c.List()
 		w.Header().Set("Content-Type", "application/json")
 		body, _ := json.Marshal(checkpoints)
 		w.WriteHeader(http.StatusOK)

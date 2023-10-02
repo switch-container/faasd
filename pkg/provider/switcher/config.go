@@ -4,7 +4,6 @@ type SwitcherConfig struct {
 	CRIUWorkDirectory string
 	CRIULogFileName   string
 	CRIULogLevel      int
-	Callbacks         []func() error
 }
 
 // example config value

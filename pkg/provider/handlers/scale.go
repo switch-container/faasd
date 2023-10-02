@@ -14,6 +14,7 @@ import (
 
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
+	"github.com/openfaas/faasd/pkg/provider"
 )
 
 func MakeReplicaUpdateHandler(client *containerd.Client, cni gocni.CNI) func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +45,7 @@ func MakeReplicaUpdateHandler(client *containerd.Client, cni gocni.CNI) func(w h
 		}
 
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
+		valid, err := provider.ValidNamespace(client.NamespaceService(), namespace)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -133,8 +134,7 @@ func MakeReplicaUpdateHandler(client *containerd.Client, cni gocni.CNI) func(w h
 		}
 
 		if createNewTask {
-			_, deployErr := createTask(ctx, ctr, cni)
-			if deployErr != nil {
+			if deployErr := createTask(ctx, ctr, cni); deployErr != nil {
 				log.Printf("[Scale] error deploying %s, error: %s\n", name, deployErr)
 				http.Error(w, deployErr.Error(), http.StatusBadRequest)
 				return

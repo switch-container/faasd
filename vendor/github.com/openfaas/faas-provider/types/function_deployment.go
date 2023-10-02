@@ -42,8 +42,6 @@ type FunctionDeployment struct {
 	// ReadOnlyRootFilesystem removes write-access from the root filesystem
 	// mount-point.
 	ReadOnlyRootFilesystem bool `json:"readOnlyRootFilesystem,omitempty"`
-
-	ForceClassicalDeploy bool `json:"forceClassicalDeploy,omitempty"`
 }
 
 // FunctionResources Memory and CPU

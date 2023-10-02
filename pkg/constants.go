@@ -34,4 +34,15 @@ const (
 	AppOverlayCacheInitNum = 1
 	// The upper bound of app overlay cache size for each service
 	AppOverlayCacheLimit = 16
+
+	SwitchLatencyMetric    = "switch-latency"
+	SwitchCountMetric      = "switch-count"
+	ColdStartLatencyMetric = "cold-start-latency"
+	ColdStartCountMetric   = "cold-start-count"
+	InvokeCountMetric      = "invoke-count"
+	PrepareSwitchFSLatency = "prepare-switch-fs-latency"
+	CRIUSwrkLatencyMetric  = "criu-swrk-latency"
+	CRIUHandleNsMetric     = "criu-handle-ns-latency"
+	SwitchKillMetric       = "criu-switch-kill-latency"
+	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
 )

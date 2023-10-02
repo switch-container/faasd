@@ -14,6 +14,7 @@ import (
 	"github.com/openfaas/faas-provider/types"
 
 	"github.com/openfaas/faasd/pkg/cninetwork"
+	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/service"
 )
 
@@ -42,10 +43,10 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 			return
 		}
 		name := req.Service
-		namespace := getRequestNamespace(req.Namespace)
+		namespace := provider.GetRequestNamespace(req.Namespace)
 
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
+		valid, err := provider.ValidNamespace(client.NamespaceService(), namespace)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -56,7 +57,7 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 			return
 		}
 
-		namespaceSecretMountPath := getNamespaceSecretMountPath(secretMountPath, namespace)
+		namespaceSecretMountPath := provider.GetNamespaceSecretMountPath(secretMountPath, namespace)
 
 		function, err := GetFunction(client, name, namespace)
 		if err != nil {
@@ -94,7 +95,7 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 		// The pull has already been done in prepull, so we can force this pull to "false"
 		pull := false
 
-		if _, err := classicalDeploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
+		if err := deploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
 			log.Printf("[Update] error deploying %s, error: %s\n", name, err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

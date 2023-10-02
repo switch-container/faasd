@@ -20,19 +20,14 @@ import (
 	"github.com/docker/distribution/reference"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/openfaas/faas-provider/types"
-	"github.com/openfaas/faasd/pkg"
 	cninetwork "github.com/openfaas/faasd/pkg/cninetwork"
-	"github.com/openfaas/faasd/pkg/provider/handlers/switcher"
+	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const annotationLabelPrefix = "com.openfaas.annotations."
-
-func GetInstanceID(serviceName string, id uint64) string {
-	return fmt.Sprintf("%s-%d", serviceName, id)
-}
 
 // MakeDeployHandler returns a handler to deploy a function
 func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
@@ -61,10 +56,10 @@ func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
 			return
 		}
 
-		namespace := getRequestNamespace(req.Namespace)
+		namespace := provider.GetRequestNamespace(req.Namespace)
 
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace) // [825us]
+		valid, err := provider.ValidNamespace(client.NamespaceService(), namespace) // [825us]
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -76,7 +71,7 @@ func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
 			return
 		}
 
-		namespaceSecretMountPath := getNamespaceSecretMountPath(secretMountPath, namespace)
+		namespaceSecretMountPath := provider.GetNamespaceSecretMountPath(secretMountPath, namespace)
 		err = validateSecrets(namespaceSecretMountPath, req.Secrets)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -86,15 +81,13 @@ func MakeDeployHandler(client *containerd.Client, cni gocni.CNI,
 		name := req.Service
 		ctx := namespaces.WithNamespace(context.Background(), namespace)
 
-		instanceID, deployErr := deploy(ctx, req, client, cni,
-			namespaceSecretMountPath, checkpointDir, alwaysPull)
-		if deployErr != nil {
+		if deployErr := deploy(ctx, req, client, cni,
+			namespaceSecretMountPath, alwaysPull); deployErr != nil {
 			log.Printf("[Deploy] error deploying %s, error: %s\n", name, deployErr)
 			http.Error(w, deployErr.Error(), http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(instanceID))
 	}
 }
 
@@ -126,10 +119,9 @@ func prepull(ctx context.Context, req types.FunctionDeployment, client *containe
 	return image, nil
 }
 
-func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
-	cni gocni.CNI, secretMountPath string, alwaysPull bool) (string, error) {
-
-	log.Printf("classical deploy for request %+v", req)
+// Return the ID of the instance, which can be used for sending request
+func deploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
+	cni gocni.CNI, secretMountPath string, alwaysPull bool) error {
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
 		snapshotter = val
@@ -137,7 +129,7 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 
 	image, err := prepull(ctx, req, client, alwaysPull)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	envs := prepareEnv(req.EnvProcess, req.EnvVars)
@@ -153,15 +145,10 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 	}
 
 	serviceName := req.Service
-	id, err := lambdaManager.AddNewInstance(serviceName)
-	if err != nil {
-		return "", err
-	}
 
-	instanceID := GetInstanceID(serviceName, id)
 	labels, err := buildLabels(&req)
 	if err != nil {
-		return "", fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
+		return fmt.Errorf("unable to apply labels to container: %s, error: %w", serviceName, err)
 	}
 
 	var memory *specs.LinuxMemory
@@ -176,39 +163,17 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 		memory.Limit = &v
 	}
 
-	// appOverlay, err := rootfsManager.PrepareAppOverlay(serviceName, id)
-	// if err != nil {
-	// 	return "", errors.Wrapf(err, "prepare app overlay when classicalDeploy for %s failed", instanceID)
-	// }
-	// // we prepare an overlayfs to mount into container
-	// // so that it can be read-write
-	// mounts = append(mounts, specs.Mount{
-	// 	Destination: "/home/app",
-	// 	Type:        "bind",
-	// 	Source:      appOverlay,
-	// 	Options:     []string{"bind"},
-	// })
-
 	log.Println(mounts)
-
-	wrapper := func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
-		start := time.Now()
-		defer func() {
-			log.Printf("Snapshot prepare() spent %s\n", time.Since(start))
-		}()
-		return containerd.WithNewSnapshot(instanceID+"-snapshot", image)(ctx, client, c)
-	}
 
 	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := client.NewContainer(
 		ctx,
-		instanceID,
+		serviceName,
 		containerd.WithImage(image),
 		containerd.WithSnapshotter(snapshotter),
-		// containerd.WithNewSnapshot(instanceID+"-snapshot", image),
-		wrapper,
+		containerd.WithNewSnapshot(serviceName+"-snapshot", image),
 		containerd.WithNewSpec(oci.WithImageConfig(image),
-			oci.WithHostname(instanceID),
+			oci.WithHostname(serviceName),
 			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
 			oci.WithMounts(mounts),
 			oci.WithEnv(envs),
@@ -217,125 +182,10 @@ func classicalDeploy(ctx context.Context, req types.FunctionDeployment, client *
 	)
 
 	if err != nil {
-		return "", errors.Wrapf(err, "unable to create container: %s", instanceID)
+		return errors.Wrapf(err, "unable to create container: %s", serviceName)
 	}
 
-	t, err := createTask(ctx, container, cni)
-	if err != nil {
-		return "", err
-	}
-
-	// By huang-jl: we do not take over the control of container, since it will
-	// broken the containerd
-	// if _, err = container.TakeOver(ctx, -1); err != nil {
-	// 	return errors.Wrapf(err, "take over container %s failed", instanceID)
-	// }
-	updater, err := initContainerInfo(ctx, client, container, serviceName, id, t)
-	if err != nil {
-		return "", err
-	}
-	_, err = lambdaManager.UpdateInstance(serviceName, id, updater)
-	return instanceID, err
-}
-
-// By huang-jl: CRIU will restore the property of cgroup, we do not need to care about that here.
-func switchDeploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
-	checkpointDir string, candidate ContainerInfo, alwaysPull bool) (string, error) {
-	wrapLambdaManagerErr := func(e error) error {
-		return errors.Wrap(e, "switcher update lambdaManager failed")
-	}
-
-	// _, err := prepull(ctx, req, client, alwaysPull) // [7.5ms]
-	if len(req.Secrets) > 0 {
-		return "", fmt.Errorf("switch do not support secrets for now")
-	}
-	// add instance to lambda manager
-	serviceName := req.Service
-	id, err := lambdaManager.AddNewInstance(serviceName)
-	if err != nil {
-		return "", wrapLambdaManagerErr(err)
-	}
-	defer func() {
-		// clean up
-		if err != nil {
-			lambdaManager.RemoveInstance(serviceName, id)
-		}
-	}()
-
-	var appOverlay *OverlayInfo
-	fsCallbacks := func() error {
-		start := time.Now()
-		appOverlay, err = rootfsManager.PrepareSwitchRootfs(serviceName, candidate)
-		if err != nil {
-			return err
-		}
-		log.Printf("PrepareSwitchRootfs spent %s\n", time.Since(start))
-		return nil
-	}
-
-	config := switcher.SwitcherConfig{
-		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
-		CRIULogFileName:   "restore.log",
-		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 4,
-		Callbacks:    []func() error{fsCallbacks},
-	}
-	switcher, err := switcher.SwitchFor(serviceName, checkpointDir, int(candidate.pid), config)
-	if err != nil {
-		return "", errors.Wrapf(err, "switch from %s to %s failed", candidate.serviceName, serviceName)
-	}
-	// we need update lambdaManager
-	old, err := lambdaManager.RemoveInstance(candidate.serviceName, candidate.id)
-	if err != nil {
-		return "", wrapLambdaManagerErr(err)
-	}
-	if old.status != SWITCHING {
-		log.Printf("find weird instance when switching: %+v", *old)
-	}
-	newPid := switcher.PID()
-	if newPid <= 0 {
-		return "", fmt.Errorf("switchDeploy get wierd process id %d", newPid)
-	}
-
-	if appOverlay == nil {
-		return "", fmt.Errorf("appOverlay is null when switch deploy!\n")
-	}
-
-	_, err = lambdaManager.UpdateInstance(serviceName, id, func(info *ContainerInfo) error {
-		info.pid = newPid
-		info.status = FINISHED
-		info.appOverlay = appOverlay
-		// new lambda instance share the same rootfs
-		// and ipaddress as candidate
-		info.IpAddress = candidate.IpAddress
-		info.rootfs = candidate.rootfs
-		info.cniID = candidate.cniID
-		return nil
-	})
-	return GetInstanceID(serviceName, id), err
-}
-
-// Return the ID of the instance, which can be used for sending request
-func deploy(ctx context.Context, req types.FunctionDeployment, client *containerd.Client,
-	cni gocni.CNI, secretMountPath, checkpointDir string, alwaysPull bool) (string, error) {
-	// check whether force classicalDeploy
-	if req.ForceClassicalDeploy {
-		return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
-	}
-	// check whether we have checkpoint
-	if !hasCheckpoint(req.Service) {
-		return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
-	}
-	// then check whether we have candidate to switch from
-	candidate, err := lambdaManager.ChooseSwitchCandidate()
-	if err != nil {
-		if errors.Is(err, ErrNotFoundIdleInstance) {
-			return classicalDeploy(ctx, req, client, cni, secretMountPath, alwaysPull)
-		}
-		return "", err
-	}
-	// we find a candidate to switch
-	return switchDeploy(ctx, req, client, checkpointDir, candidate, alwaysPull)
+	return createTask(ctx, container, cni)
 }
 
 func buildLabels(request *types.FunctionDeployment) (map[string]string, error) {
@@ -362,14 +212,14 @@ func buildLabels(request *types.FunctionDeployment) (map[string]string, error) {
 	return labels, nil
 }
 
-func createTask(ctx context.Context, container containerd.Container, cni gocni.CNI) (containerd.Task, error) {
+func createTask(ctx context.Context, container containerd.Container, cni gocni.CNI) error {
 
 	name := container.ID()
 
 	task, taskErr := container.NewTask(ctx, cio.BinaryIO("/usr/local/bin/faasd", nil))
 
 	if taskErr != nil {
-		return nil, fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
+		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
 	}
 
 	log.Printf("Container ID: %s\tTask ID %s:\tTask PID: %d\t\n", name, task.ID(), task.Pid())
@@ -380,25 +230,25 @@ func createTask(ctx context.Context, container containerd.Container, cni gocni.C
 	log.Printf("create network latency: %s", time.Since(start))
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	ip, err := cninetwork.GetIPAddress(name, task.Pid())
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	log.Printf("%s has IP: %s.\n", name, ip)
 
 	_, waitErr := task.Wait(ctx)
 	if waitErr != nil {
-		return nil, errors.Wrapf(waitErr, "Unable to wait for task to start: %s", name)
+		return errors.Wrapf(waitErr, "Unable to wait for task to start: %s", name)
 	}
 
 	if startErr := task.Start(ctx); startErr != nil {
-		return nil, errors.Wrapf(startErr, "Unable to start task: %s", name)
+		return errors.Wrapf(startErr, "Unable to start task: %s", name)
 	}
-	return task, nil
+	return nil
 }
 
 func prepareEnv(envProcess string, reqEnvVars map[string]string) []string {
@@ -450,45 +300,25 @@ func withMemory(mem *specs.LinuxMemory) oci.SpecOpts {
 	}
 }
 
-func initContainerInfo(ctx context.Context, client *containerd.Client, ctr containerd.Container,
-	serviceName string, id uint64, t containerd.Task) (InstanceInfoUpdateFunc, error) {
-	pid := t.Pid()
-	name := ctr.ID()
-	ip, err := cninetwork.GetIPAddress(name, pid) // [95us]
-	if err != nil {
-		return nil, err
-	}
-	i, err := ctr.Info(ctx) // [235us]
-	if err != nil {
-		return nil, err
-	}
-	s := client.SnapshotService(i.Snapshotter)
-	ms, err := s.Mounts(ctx, i.SnapshotKey) // [241us]
-	if err != nil {
-		return nil, err
-	}
-	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rootOverlay, err := parseRootFromSnapshotter(ns, ctr.ID(), ms)
-	if err != nil {
-		return nil, err
-	}
+// getOSMounts provides a mount for os-specific files such
+// as the hosts file and resolv.conf
+func getOSMounts() []specs.Mount {
+	// Prior to hosts_dir env-var, this value was set to
+	// os.Getwd()
+	hostsDir := "/var/lib/faasd"
+	mounts := []specs.Mount{}
+	mounts = append(mounts, specs.Mount{
+		Destination: "/etc/resolv.conf",
+		Type:        "bind",
+		Source:      path.Join(hostsDir, "resolv.conf"),
+		Options:     []string{"rbind", "ro"},
+	})
 
-	cniID := cninetwork.NetID(t)
-	// try to decrease the work need to do in updateFunc
-	return func(info *ContainerInfo) error {
-		info.serviceName = serviceName
-		info.id = id
-		info.pid = int(pid)
-		// No need to save lower dirs, it is too large
-		info.rootfs.work = rootOverlay.work
-		info.rootfs.upper = rootOverlay.upper
-		info.rootfs.merged = rootOverlay.merged
-		info.status = FINISHED
-		info.IpAddress = ip
-		info.cniID = cniID
-		return nil
-	}, nil
+	mounts = append(mounts, specs.Mount{
+		Destination: "/etc/hosts",
+		Type:        "bind",
+		Source:      path.Join(hostsDir, "hosts"),
+		Options:     []string{"rbind", "ro"},
+	})
+	return mounts
 }

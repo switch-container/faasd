@@ -17,9 +17,12 @@ import (
 	"github.com/openfaas/faas-provider/logs"
 	"github.com/openfaas/faas-provider/proxy"
 	"github.com/openfaas/faas-provider/types"
+	"github.com/openfaas/faasd/pkg"
 	faasd "github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/cninetwork"
 	faasdlogs "github.com/openfaas/faasd/pkg/logs"
+	"github.com/openfaas/faasd/pkg/metrics"
+	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/provider/config"
 	"github.com/openfaas/faasd/pkg/provider/handlers"
 	"github.com/spf13/cobra"
@@ -36,7 +39,6 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().String("pull-policy", "Always", `Set to "Always" to force a pull of images upon deployment, or "IfNotPresent" to try to use a cached image.`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
-
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
 		if flagErr != nil {
 			return flagErr
@@ -74,11 +76,39 @@ func makeProviderCmd() *cobra.Command {
 			return fmt.Errorf("cannot write resolv.conf file: %s", writeResolvErr)
 		}
 
-		handlers.InitCheckpointModule()
-		handlers.InitMountModule()
 		cni, err := cninetwork.InitNetwork()
 		if err != nil {
 			return err
+		}
+		client, err := containerd.New(providerConfig.Sock)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		m, err := provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{})
+		if err != nil {
+			return err
+		}
+		// init metric
+		metricLogger := metrics.GetMetricLogger()
+		for _, m := range []struct {
+			name string
+			ty   metrics.MetricType
+		}{
+			{pkg.SwitchLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.SwitchCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.ColdStartLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.ColdStartCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.InvokeCountMetric, metrics.SINGLE_COUNTER},
+
+			{pkg.PrepareSwitchFSLatency, metrics.LATENCY_METRIC},
+			{pkg.CRIUSwrkLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.CRIUHandleNsMetric, metrics.LATENCY_METRIC},
+			{pkg.SwitchKillMetric, metrics.LATENCY_METRIC},
+			{pkg.CRIUSwrkCmdStartMetric, metrics.LATENCY_METRIC},
+		} {
+			metricLogger.RegisterMetric(m.name, m.ty)
 		}
 
 		sig := make(chan os.Signal, 1)
@@ -88,16 +118,9 @@ func makeProviderCmd() *cobra.Command {
 		go func() {
 			<-sig
 			log.Println("Signal received.. shutting down server")
-			handlers.LambdaShutdown(cni)
+			m.ShutdownAll()
 			wg.Done()
 		}()
-
-		client, err := containerd.New(providerConfig.Sock)
-		if err != nil {
-			return err
-		}
-
-		defer client.Close()
 
 		invokeResolver := handlers.NewInvokeResolver(client)
 
@@ -109,11 +132,11 @@ func makeProviderCmd() *cobra.Command {
 		}
 
 		bootstrapHandlers := types.FaaSHandlers{
-			FunctionProxy:  handlers.HookInvokeProxy(proxy.NewHandlerFunc(*config, invokeResolver)),
+			FunctionProxy:  proxy.NewHandlerFunc(*config, invokeResolver),
 			DeleteFunction: handlers.MakeDeleteHandler(client, cni),
 			DeployFunction: handlers.MakeDeployHandler(client, cni, baseUserSecretsPath,
 				providerConfig.CheckpointDir, alwaysPull),
-			FunctionLister:  handlers.MakeReadHandler(client),
+			FunctionLister:  handlers.MakeReadHandler(m),
 			FunctionStatus:  handlers.MakeReplicaReaderHandler(client),
 			ScaleFunction:   handlers.MakeReplicaUpdateHandler(client, cni),
 			UpdateFunction:  handlers.MakeUpdateHandler(client, cni, baseUserSecretsPath, alwaysPull),
@@ -123,7 +146,11 @@ func makeProviderCmd() *cobra.Command {
 			Secrets:         handlers.MakeSecretHandler(client.NamespaceService(), baseUserSecretsPath),
 			Logs:            logs.NewLogHandlerFunc(faasdlogs.New(), config.ReadTimeout),
 			MutateNamespace: handlers.MakeMutateNamespace(client),
-			ListCheckpoint:  handlers.MakeCheckpointReader(),
+
+			ListCheckpoint:   provider.MakeCheckpointReader(m),
+			RegisterFunction: provider.MakeRegisterHandler(m),
+			InvokeFunction:   provider.MakeInvokeHandler(m, *config),
+			MetricFunction:   provider.MakeMetricReader(),
 		}
 
 		log.Printf("Listening on: 0.0.0.0:%d\n", *config.TCPPort)

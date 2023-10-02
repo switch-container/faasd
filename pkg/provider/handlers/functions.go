@@ -14,6 +14,7 @@ import (
 	"github.com/openfaas/faasd/pkg"
 	faasd "github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/cninetwork"
+	"github.com/openfaas/faasd/pkg/provider"
 )
 
 // TODO(huang-jl) change the Function metadata
@@ -35,13 +36,13 @@ type Function struct {
 }
 
 // ListFunctions returns a map of all functions with running tasks on namespace
-func ListFunctions(client *containerd.Client, namespace string) (map[string]*Function, error) {
+func ListFunctions(m *provider.LambdaManager, namespace string) (map[string]*Function, error) {
 
 	if namespace != faasd.DefaultFunctionNamespace {
 		return nil, fmt.Errorf("Only support default namespace %s", faasd.DefaultFunctionNamespace)
 	}
 
-	containers, err := lambdaManager.ListInstances()
+	containers, err := m.ListInstances()
 	if err != nil {
 		return nil, err
 	}
@@ -49,11 +50,11 @@ func ListFunctions(client *containerd.Client, namespace string) (map[string]*Fun
 	functions := make(map[string]*Function)
 
 	for _, c := range containers {
-		name := GetInstanceID(c.serviceName, c.id)
+		name := provider.GetInstanceID(c.LambdaName, c.ID)
 		f := Function{
 			name:      name,
 			namespace: faasd.DefaultFunctionNamespace,
-			pid:       uint32(c.pid),
+			pid:       uint32(c.Pid),
 			IP:        c.IpAddress,
 		}
 		if err != nil {

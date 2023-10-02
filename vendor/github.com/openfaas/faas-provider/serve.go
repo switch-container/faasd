@@ -58,7 +58,8 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 		handlers.Info = auth.DecorateWithBasicAuth(handlers.Info, credentials)
 		handlers.Secrets = auth.DecorateWithBasicAuth(handlers.Secrets, credentials)
 		handlers.Logs = auth.DecorateWithBasicAuth(handlers.Logs, credentials)
-		handlers.ListCheckpoint = auth.DecorateWithBasicAuth(handlers.ListCheckpoint, credentials)
+		handlers.RegisterFunction = auth.DecorateWithBasicAuth(handlers.RegisterFunction, credentials)
+		// NOTE by huang-jl Invoke, Metric, ListCheckpoint function do not need auth for simplicity
 	}
 
 	hm := newHttpMetrics()
@@ -107,7 +108,20 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 		r.HandleFunc("/healthz", handlers.Health).Methods(http.MethodGet)
 	}
 
-	r.HandleFunc("/system/checkpoints", handlers.ListCheckpoint).Methods(http.MethodGet)
+	if handlers.RegisterFunction != nil {
+		r.HandleFunc("/system/register", handlers.RegisterFunction).Methods(http.MethodPost)
+	}
+	if handlers.InvokeFunction != nil {
+		r.HandleFunc("/invoke/{name:["+NameExpression+"]+}", handlers.InvokeFunction)
+		r.HandleFunc("/invoke/{name:["+NameExpression+"]+}/", handlers.InvokeFunction)
+		r.HandleFunc("/invoke/{name:["+NameExpression+"]+}/{params:.*}", handlers.InvokeFunction)
+	}
+	if handlers.MetricFunction != nil {
+		r.HandleFunc("/system/metrics", handlers.MetricFunction).Methods(http.MethodGet)
+	}
+	if handlers.ListCheckpoint != nil {
+		r.HandleFunc("/system/checkpoints", handlers.ListCheckpoint).Methods(http.MethodGet)
+	}
 
 	r.HandleFunc("/metrics", promhttp.Handler().ServeHTTP)
 

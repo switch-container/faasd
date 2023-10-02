@@ -21,25 +21,18 @@ func NewInvokeResolver(client *containerd.Client) *InvokeResolver {
 }
 
 func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
-	serviceName, id, err := ParseFunctionName(functionName)
-	if err != nil {
-		return url.URL{}, err
-	}
+	actualFunctionName := functionName
 	log.Printf("Resolve: %q\n", functionName)
 
-	namespace := getNamespaceOrDefault(serviceName, faasd.DefaultFunctionNamespace)
+	namespace := getNamespaceOrDefault(functionName, faasd.DefaultFunctionNamespace)
 
-	if strings.Contains(serviceName, ".") {
-		serviceName = strings.TrimSuffix(serviceName, "."+namespace)
+	if strings.Contains(functionName, ".") {
+		functionName = strings.TrimSuffix(functionName, "."+namespace)
 	}
 
-	// nil updator means read only
-	info, err := lambdaManager.UpdateInstance(serviceName, id, nil)
-	if err != nil {
-		return url.URL{}, err
-	}
+	function, err := GetFunction(i.client, actualFunctionName, namespace)
 
-	serviceIP := info.IpAddress
+	serviceIP := function.IP
 
 	urlStr := fmt.Sprintf("http://%s:%d", serviceIP, watchdogPort)
 
