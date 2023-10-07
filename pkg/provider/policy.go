@@ -85,4 +85,3 @@ cold_start_routine:
 	return
 }
 
-// TODO(huang-jl) add a InitPolicy to fill the container pool at init time

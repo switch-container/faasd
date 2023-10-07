@@ -1,12 +1,14 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -26,6 +28,7 @@ const (
 
 // proxyRequest handles the actual resolution of and then request to the function service.
 func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaManager, proxyClient *http.Client) {
+	start := time.Now()
 	ctx := originalReq.Context()
 
 	pathVars := mux.Vars(originalReq)
@@ -35,8 +38,16 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 		return
 	}
 
+	originalBody, err := io.ReadAll(originalReq.Body)
+	if err != nil {
+		httputil.Errorf(w, http.StatusInternalServerError, "read original request body for %s failed: %s", lambdaName, err)
+		return
+	}
+	originalReq.Body.Close()
+
 	instance, err := m.MakeCtrInstanceFor(lambdaName)
 	if err != nil {
+    log.Printf("MakeCtrInstanceFor %s failed: %s", lambdaName, err)
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to make ctr instance for %s: %s", lambdaName, err)
 		return
 	}
@@ -47,6 +58,7 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 		return
 	}
 	instance.status = RUNNING
+	instance.lastActive = time.Now()
 	pool.PushIntoBusy(instance)
 
 	if err = metrics.GetMetricLogger().Emit(pkg.InvokeCountMetric, lambdaName, 1); err != nil {
@@ -67,19 +79,37 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 		return
 	}
 
-	if proxyReq.Body != nil {
-		defer proxyReq.Body.Close()
+	// the faasd watchdog inside the container may not be initialized
+	// here (e.g., cold-start)
+	// we need retry here.
+	var (
+		response  *http.Response
+		seconds   time.Duration
+		success   bool          = false
+		sleepTime time.Duration = time.Millisecond * 500
+	)
+	for i := 0; i < 3; i++ {
+		proxyReq.Body = io.NopCloser(bytes.NewReader(originalBody))
+		response, err = proxyClient.Do(proxyReq.WithContext(ctx))
+		seconds = time.Since(start)
+
+		if err == nil {
+			success = true
+			break
+		} else if os.IsTimeout(err) {
+			log.Printf("timeout when proxy to %s-%d", instance.LambdaName, instance.ID)
+			break
+		}
+
+		log.Printf("[Attemp %d] error with proxy request for %s-%d  to %s, %s\n", i,
+			instance.LambdaName, instance.ID, proxyReq.URL.String(), err.Error())
+		time.Sleep(sleepTime)
+		sleepTime *= 4
 	}
 
-	start := time.Now()
-	response, err := proxyClient.Do(proxyReq.WithContext(ctx))
-	seconds := time.Since(start)
-
-	if err != nil {
-		log.Printf("error with proxy request to: %s, %s\n", proxyReq.URL.String(), err.Error())
+	if !success {
 		// TODO(huang-jl) garbage collect this ctr instance
 		instance.status = INVALID
-
 		httputil.Errorf(w, http.StatusInternalServerError, "Can't reach service for: %s.", lambdaName)
 		return
 	}
@@ -91,7 +121,7 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 		defer response.Body.Close()
 	}
 
-	log.Printf("%s took %f seconds\n", lambdaName, seconds.Seconds())
+	log.Printf("%s-%d took %f seconds\n", lambdaName, instance.ID, seconds.Seconds())
 
 	clientHeader := w.Header()
 	copyHeaders(clientHeader, &response.Header)
@@ -130,10 +160,6 @@ func buildProxyRequest(originalReq *http.Request, baseURL url.URL, extraPath str
 	}
 	if upstreamReq.Header.Get("X-Forwarded-For") == "" {
 		upstreamReq.Header["X-Forwarded-For"] = []string{originalReq.RemoteAddr}
-	}
-
-	if originalReq.Body != nil {
-		upstreamReq.Body = originalReq.Body
 	}
 
 	return upstreamReq, nil

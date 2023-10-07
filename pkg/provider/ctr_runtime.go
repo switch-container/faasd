@@ -226,7 +226,6 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 			}
 		}
 	}()
-	// add instance to lambda manager
 	serviceName := req.Service
 
 	start := time.Now()
@@ -238,6 +237,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		log.Printf("emit PrepareSwitchFSLatency metric failed: %s", err)
 	}
 
+	// TODO(huang-jl) change the work directory structure ?
 	config := switcher.SwitcherConfig{
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",

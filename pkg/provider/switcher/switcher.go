@@ -108,6 +108,12 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	}
 
 	var extraFiles []*os.File
+	defer func() {
+		// close all fds
+		for _, fd := range extraFiles {
+			fd.Close()
+		}
+	}()
 
 	// start := time.Now()
 	// [40us]
@@ -172,6 +178,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	if err = switcher.criuSwrk(&criurpc.CriuReq{Type: &t, Opts: rpcOpts}, criuOpts, extraFiles); err != nil {
 		return errors.Wrapf(err, "criuSwrk failed")
 	}
+
 	return metrics.GetMetricLogger().Emit(pkg.CRIUSwrkLatencyMetric, switcher.checkpoint, time.Since(start))
 }
 
@@ -334,7 +341,9 @@ func getPidOfContainer(client *containerd.Client, containerID string) (int, cont
 	return pid, ctr, nil
 }
 
-// exported main function
+// checkpoint: the name of image directory of the target container
+// checkpointDir: the upper-level directory which containers all function's checkpoint image
+// pid: the init pid of original container
 func SwitchFor(checkpoint, checkpointDir string, pid int, config SwitcherConfig) (*Switcher, error) {
 	// pid, ctr, err := lambda.getPidOfContainer(switchReq.ContainerID)
 

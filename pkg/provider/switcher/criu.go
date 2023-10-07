@@ -45,7 +45,7 @@ type CriuOpts struct {
 	CgroupFD                uintptr            // File Descriptor to Set when exec CRIU swrk
 }
 
-func bindLoggingPipe(pipe io.Reader, output io.Writer) {
+func bindLoggingPipe(pipe io.Reader, output io.WriteCloser) {
 	logFlags := log.Flags()
 	prefix := log.Prefix()
 	logger := log.New(output, prefix, logFlags)
@@ -57,6 +57,7 @@ func bindLoggingPipe(pipe io.Reader, output io.Writer) {
 				log.Printf("Error scanning: %s", err)
 			}
 		}
+		output.Close()
 	}()
 }
 
@@ -111,10 +112,10 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	args := []string{"swrk", "3"}
 	cmd := exec.Command("criu", args...)
 
+	cmd.Stdin = nil
 	// By huang-jl: if want to see the ouput from container after restoring
 	// then use redirectSwitchOutput(). By default, the stdout, stderr will
 	// be directed to /dev/null
-	cmd.Stdin = nil
 	// if err := redirectSwitchOutput(cmd, opts); err != nil {
 	// 	return err
 	// }

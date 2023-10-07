@@ -109,14 +109,14 @@ func (m *LambdaManager) MakeCtrInstanceFor(lambdaName string) (*CtrInstance, err
 	switch depolyRes.decision {
 	case COLD_START:
 		id := depolyRes.pool.idAllocator.Add(1)
-		log.Printf("cold start for %s id %d", lambdaName, id)
+		log.Printf("cold start for %s-%d", lambdaName, id)
 		return m.Runtime.ColdStart(req, id)
 	case REUSE:
-		log.Printf("reuse container id %d for %s", depolyRes.instance.ID, lambdaName)
+		log.Printf("reuse container for %s-%d", lambdaName, depolyRes.instance.ID)
 		return depolyRes.instance, nil
 	case SWITCH:
 		id := depolyRes.pool.idAllocator.Add(1)
-		log.Printf("switch %s-%d for %s id %d", depolyRes.instance.LambdaName, depolyRes.instance.ID, lambdaName, id)
+		log.Printf("switch from old %s-%d for new %s-%d", depolyRes.instance.LambdaName, depolyRes.instance.ID, lambdaName, id)
 		return m.Runtime.SwitchStart(req, id, depolyRes.instance)
 	}
 	return nil, fmt.Errorf("unknown decision: %+v", depolyRes.decision)
