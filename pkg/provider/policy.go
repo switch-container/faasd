@@ -7,6 +7,19 @@ import (
 
 type DeployDecision int
 
+func (d DeployDecision) String() string {
+	switch d {
+	case COLD_START:
+		return "cold start"
+	case REUSE:
+		return "reuse"
+	case SWITCH:
+		return "switch"
+	default:
+		return "invalid decision"
+	}
+}
+
 const (
 	COLD_START DeployDecision = iota
 	REUSE
@@ -84,4 +97,3 @@ cold_start_routine:
 	res.decision = COLD_START
 	return
 }
-

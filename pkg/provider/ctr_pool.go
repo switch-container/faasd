@@ -72,15 +72,16 @@ func (pool *CtrPool) MoveFromBusyToFree(id uint64) *CtrInstance {
 }
 
 type CtrInstance struct {
-	LambdaName string // key in LambdaManager
-	ID         uint64 // key in CtrPool
-	Pid        int    // init process id in Container
-	status     ContainerStatus
-	IpAddress  string
-	rootfs     *OverlayInfo // do not need contains lowerdirs since it is large but useless for now
-	cniID      string       // which used to remove network resources
-	appOverlay *OverlayInfo
-	lastActive time.Time
+	LambdaName     string // key in LambdaManager
+	ID             uint64 // key in CtrPool
+	Pid            int    // init process id in Container
+	status         ContainerStatus
+	IpAddress      string
+	rootfs         *OverlayInfo // do not need contains lowerdirs since it is large but useless for now
+	cniID          string       // which used to remove network resources
+	appOverlay     *OverlayInfo
+	lastActive     time.Time
+	depolyDecision DeployDecision // the depoly decision that created these instance
 }
 
 func GetInstanceID(lambdaName string, id uint64) string {

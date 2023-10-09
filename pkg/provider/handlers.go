@@ -3,12 +3,14 @@ package provider
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -28,6 +30,7 @@ const (
 
 // proxyRequest handles the actual resolution of and then request to the function service.
 func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaManager, proxyClient *http.Client) {
+	var err error
 	start := time.Now()
 	ctx := originalReq.Context()
 
@@ -47,10 +50,11 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 
 	instance, err := m.MakeCtrInstanceFor(lambdaName)
 	if err != nil {
-    log.Printf("MakeCtrInstanceFor %s failed: %s", lambdaName, err)
+		log.Printf("MakeCtrInstanceFor %s failed: %s", lambdaName, err)
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to make ctr instance for %s: %s", lambdaName, err)
 		return
 	}
+	instanceID := GetInstanceID(instance.LambdaName, instance.ID)
 	// move instance to busy pool
 	pool, err := m.GetCtrPool(lambdaName)
 	if err != nil {
@@ -83,34 +87,57 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 	// here (e.g., cold-start)
 	// we need retry here.
 	var (
-		response  *http.Response
-		seconds   time.Duration
-		success   bool          = false
-		sleepTime time.Duration = time.Millisecond * 500
+		response    *http.Response
+		retry_times int
 	)
-	for i := 0; i < 3; i++ {
-		proxyReq.Body = io.NopCloser(bytes.NewReader(originalBody))
-		response, err = proxyClient.Do(proxyReq.WithContext(ctx))
-		seconds = time.Since(start)
 
-		if err == nil {
-			success = true
-			break
-		} else if os.IsTimeout(err) {
-			log.Printf("timeout when proxy to %s-%d", instance.LambdaName, instance.ID)
+	for retry_times = 0; ; retry_times++ {
+		if time.Since(start) > 50*time.Second {
+			err = fmt.Errorf("%s spent more than 50 seconds still failed to send request", instanceID)
 			break
 		}
 
-		log.Printf("[Attemp %d] error with proxy request for %s-%d  to %s, %s\n", i,
-			instance.LambdaName, instance.ID, proxyReq.URL.String(), err.Error())
-		time.Sleep(sleepTime)
-		sleepTime *= 4
+		if retry_times > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		proxyReq.Body = io.NopCloser(bytes.NewReader(originalBody))
+		response, err = proxyClient.Do(proxyReq.WithContext(ctx))
+		if err == nil {
+			if response.StatusCode != http.StatusServiceUnavailable {
+				// here means we send request succeed but there is runtime error in container
+
+				// NOTE by huang-jl: StatusServiceUnavailable means the upstream app not initialize
+				// please refer to of-watchdog to see when will return StatusServiceUnavailable
+				break
+			}
+		} else if errors.Is(err, syscall.ECONNREFUSED) {
+			// here means container's watchdog not ready
+			// log.Printf("%s container not ready: %s", instanceID, err)
+		} else {
+			// should not retry
+			if os.IsTimeout(err) {
+				log.Printf("timeout when proxy to %s (%s)", instanceID, instance.depolyDecision)
+			}
+			break
+		}
 	}
 
-	if !success {
+	// if err != nil {
+	// 	log.Printf("[Attemp %d] error occur proxy request for %s-%d (%s) to %s took %s: %s\n",
+	// 		retry_times, instance.LambdaName, instance.ID, instance.depolyDecision,
+	// 		proxyReq.URL.String(), elapsed, err)
+	// } else {
+	// 	log.Printf("[Attemp %d] retry proxy request for %s-%d (%s) to %s took %s: (status %d)\n",
+	// 		retry_times, instance.LambdaName, instance.ID, instance.depolyDecision,
+	// 		proxyReq.URL.String(), elapsed, response.StatusCode)
+	// }
+
+	if err != nil {
 		// TODO(huang-jl) garbage collect this ctr instance
 		instance.status = INVALID
 		httputil.Errorf(w, http.StatusInternalServerError, "Can't reach service for: %s.", lambdaName)
+		log.Printf("%s (%s) invoke failed: %s", instanceID, instance.depolyDecision, err)
 		return
 	}
 
@@ -121,7 +148,8 @@ func proxyRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaMan
 		defer response.Body.Close()
 	}
 
-	log.Printf("%s-%d took %f seconds\n", lambdaName, instance.ID, seconds.Seconds())
+	log.Printf("%s (%s) total took %s (retry %d times)\n",
+		instanceID, instance.depolyDecision, time.Since(start), retry_times)
 
 	clientHeader := w.Header()
 	copyHeaders(clientHeader, &response.Header)

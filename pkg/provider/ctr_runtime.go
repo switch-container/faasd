@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/containerd/containerd"
@@ -114,6 +115,7 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
 	}
 
+	// memory limits
 	var memory *specs.LinuxMemory
 	if req.Limits != nil && len(req.Limits.Memory) > 0 {
 		memory = &specs.LinuxMemory{}
@@ -124,6 +126,19 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 		}
 		v := qty.Value()
 		memory.Limit = &v
+	}
+
+	// cpu limits
+	var (
+		period = uint64(100000)
+		quota  int64
+	)
+	if req.Limits != nil && len(req.Limits.CPU) > 0 {
+		cpuLimits, err := strconv.ParseFloat(req.Limits.CPU, 32)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse cpu limit in FunctionDeployment failed")
+		}
+		quota = int64(cpuLimits * 100000.0)
 	}
 
 	wrapper := func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
@@ -147,7 +162,9 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
 			oci.WithMounts(mounts),
 			oci.WithEnv(envs),
-			withMemory(memory)),
+			withCPU(quota, period),
+			withMemory(memory),
+		),
 		containerd.WithContainerLabels(labels),
 	)
 
@@ -195,13 +212,14 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 
 	cniID := cninetwork.NetID(task)
 	return &CtrInstance{
-		LambdaName: serviceName,
-		ID:         id,
-		Pid:        int(pid),
-		rootfs:     &rootOverlay,
-		IpAddress:  ip,
-		cniID:      cniID,
-		status:     IDLE,
+		LambdaName:     serviceName,
+		ID:             id,
+		Pid:            int(pid),
+		rootfs:         &rootOverlay,
+		IpAddress:      ip,
+		cniID:          cniID,
+		status:         IDLE,
+		depolyDecision: COLD_START,
 	}, nil
 }
 
@@ -263,6 +281,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	newInstance.ID = id
 	newInstance.Pid = newPid
 	newInstance.appOverlay = appOverlay
+	newInstance.depolyDecision = SWITCH
 	// ipaddress, cniID, rootfs will not change
 	return newInstance, nil
 }
@@ -375,6 +394,15 @@ func withMemory(mem *specs.LinuxMemory) oci.SpecOpts {
 			}
 			s.Linux.Resources.Memory.Limit = mem.Limit
 		}
+		return nil
+	}
+}
+
+func withCPU(quota int64, period uint64) oci.SpecOpts {
+	if quota > 0 {
+		return oci.WithCPUCFS(quota, period)
+	}
+	return func(ctx context.Context, _ oci.Client, c *containers.Container, s *oci.Spec) error {
 		return nil
 	}
 }

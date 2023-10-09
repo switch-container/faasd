@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/containerd/containerd"
@@ -163,6 +164,19 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 		memory.Limit = &v
 	}
 
+	// cpu limits
+	var (
+		period = uint64(100000)
+		quota  int64
+	)
+	if req.Limits != nil && len(req.Limits.CPU) > 0 {
+		cpuLimits, err := strconv.ParseFloat(req.Limits.CPU, 32)
+		if err != nil {
+			return errors.Wrap(err, "parse cpu limit in FunctionDeployment failed")
+		}
+		quota = int64(cpuLimits * 100000.0)
+	}
+
 	log.Println(mounts)
 
 	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
@@ -177,7 +191,9 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
 			oci.WithMounts(mounts),
 			oci.WithEnv(envs),
-			withMemory(memory)),
+			withMemory(memory),
+			withCPU(quota, period),
+		),
 		containerd.WithContainerLabels(labels),
 	)
 
@@ -296,6 +312,15 @@ func withMemory(mem *specs.LinuxMemory) oci.SpecOpts {
 			}
 			s.Linux.Resources.Memory.Limit = mem.Limit
 		}
+		return nil
+	}
+}
+
+func withCPU(quota int64, period uint64) oci.SpecOpts {
+	if quota > 0 {
+		return oci.WithCPUCFS(quota, period)
+	}
+	return func(ctx context.Context, _ oci.Client, c *containers.Container, s *oci.Spec) error {
 		return nil
 	}
 }

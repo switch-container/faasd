@@ -113,6 +113,7 @@ func (m *LambdaManager) MakeCtrInstanceFor(lambdaName string) (*CtrInstance, err
 		return m.Runtime.ColdStart(req, id)
 	case REUSE:
 		log.Printf("reuse container for %s-%d", lambdaName, depolyRes.instance.ID)
+		depolyRes.instance.depolyDecision = REUSE
 		return depolyRes.instance, nil
 	case SWITCH:
 		id := depolyRes.pool.idAllocator.Add(1)
