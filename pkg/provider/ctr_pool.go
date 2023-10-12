@@ -1,16 +1,12 @@
 package provider
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
-	gocni "github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
-	"github.com/pkg/errors"
 )
 
 // This is a pool for each kind of Lambda function
@@ -82,25 +78,12 @@ type CtrInstance struct {
 	appOverlay     *OverlayInfo
 	lastActive     time.Time
 	depolyDecision DeployDecision // the depoly decision that created these instance
+	originalCtrID  string         // the original container ID
+	// e.g., pyase-5 which switch from hello-world-5, the original container ID is hello-world-5
+	// the originalCtrID is used for cleanup
 }
 
 func GetInstanceID(lambdaName string, id uint64) string {
 	return fmt.Sprintf("%s-%d", lambdaName, id)
 }
 
-func KillInstance(ctrInstance *CtrInstance, cni gocni.CNI) error {
-	pid := ctrInstance.Pid
-	// remove cni network first (it needs network ns)
-	err := cni.Remove(context.Background(), ctrInstance.cniID,
-		fmt.Sprintf("/proc/%d/ns/net", pid))
-	if err != nil {
-		return errors.Wrapf(err, "remove cni network for %s failed\n", ctrInstance.cniID)
-	}
-	// kill process
-	err = syscall.Kill(pid, syscall.SIGKILL)
-	if err != nil {
-		return errors.Wrapf(err, "kill process %d failed\n", pid)
-	}
-	ctrInstance.status = INVALID
-	return nil
-}

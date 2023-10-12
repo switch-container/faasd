@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/containerd/containerd"
@@ -29,6 +31,19 @@ import (
 
 const annotationLabelPrefix = "com.openfaas.annotations."
 
+var ColdStartTooMuchError = fmt.Errorf("cold start rate reach limitation")
+
+type ColdStartReq struct {
+	req    types.FunctionDeployment
+	id     uint64
+	notify chan<- ColdStartRes
+}
+
+type ColdStartRes struct {
+	instance *CtrInstance
+	err      error
+}
+
 type CtrRuntime struct {
 	Client *containerd.Client
 	cni    gocni.CNI
@@ -36,21 +51,78 @@ type CtrRuntime struct {
 	alwaysPull      bool
 	rootfsManager   *RootfsManager
 	checkpointCache *CheckpointCache
+	workerCh        chan<- ColdStartReq
+	reapCh          chan<- int
 }
 
-func (r CtrRuntime) ColdStart(req types.FunctionDeployment, id uint64) (*CtrInstance, error) {
-	var err error
-	begin := time.Now()
-	defer func() {
-		if err == nil {
-			if err = metrics.GetMetricLogger().Emit(pkg.ColdStartLatencyMetric, req.Service, time.Since(begin)); err != nil {
-				log.Printf("[Error] Emit ColdStartLatencyMetric failed %s", err)
+func NewCtrRuntime(client *containerd.Client, cni gocni.CNI, rootfsManager *RootfsManager,
+	checkpointCache *CheckpointCache, alwaysPull bool, concurrency int) CtrRuntime {
+	// TODO(huang-jl) Is an 2-element channel enough ?
+	workerCh := make(chan ColdStartReq, 2)
+	reapCh := make(chan int, 1024)
+	r := CtrRuntime{
+		Client:          client,
+		cni:             cni,
+		alwaysPull:      alwaysPull,
+		rootfsManager:   rootfsManager,
+		checkpointCache: checkpointCache,
+		workerCh:        workerCh,
+		reapCh:          reapCh,
+	}
+	for i := 0; i < concurrency; i++ {
+		go r.work(workerCh)
+	}
+	go r.reap(reapCh)
+	return r
+}
+
+func (r CtrRuntime) reap(reapCh <-chan int) {
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGCHLD)
+	var pidsToWait []int
+	for {
+		select {
+		case <-sigc:
+			for _, pid := range pidsToWait {
+				// we ignore error and status ...
+				// just do simple reap here
+				syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
 			}
-			if err = metrics.GetMetricLogger().Emit(pkg.ColdStartCountMetric, req.Service, 1); err != nil {
-				log.Printf("[Error] Emit ColdStartCountMetric failed %s", err)
+		case pid := <-reapCh:
+			if pid > 0 {
+				pidsToWait = append(pidsToWait, pid)
 			}
 		}
-	}()
+	}
+}
+
+// This is the worker that cold start container
+func (r CtrRuntime) work(workerCh <-chan ColdStartReq) {
+	for req := range workerCh {
+		instance, err := r.coldStart(req.req, req.id)
+		res := ColdStartRes{instance: instance, err: err}
+		req.notify <- res
+	}
+}
+
+// NOTE by huang-jl: cold-start of the entire system has concurrency limitation.
+// There will only be fixed amount of worker to do cold-start jobs. (refer to work() above)
+func (r CtrRuntime) ColdStart(req types.FunctionDeployment, id uint64) (*CtrInstance, error) {
+	notify := make(chan ColdStartRes)
+	coldStartReq := ColdStartReq{req: req, id: id, notify: notify}
+	select {
+	case r.workerCh <- coldStartReq:
+		res := <-notify
+		return res.instance, res.err
+	default:
+		// when workerCh is full, we have to wait/retry to prevent
+		// starting too much containers concurrently
+		return nil, ColdStartTooMuchError
+	}
+}
+
+func (r CtrRuntime) coldStart(req types.FunctionDeployment, id uint64) (*CtrInstance, error) {
+	var err error
 	instanceID := GetInstanceID(req.Service, id)
 	namespace := GetRequestNamespace(req.Namespace)
 	// Check if namespace exists, and it has the openfaas label
@@ -141,13 +213,13 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 		quota = int64(cpuLimits * 100000.0)
 	}
 
-	wrapper := func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
-		start := time.Now()
-		defer func() {
-			log.Printf("Snapshot prepare() spent %s\n", time.Since(start))
-		}()
-		return containerd.WithNewSnapshot(instanceID+"-snapshot", image)(ctx, client, c)
-	}
+	// wrapper := func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
+	// 	start := time.Now()
+	// 	defer func() {
+	// 		log.Printf("Snapshot prepare() spent %s\n", time.Since(start))
+	// 	}()
+	// 	return containerd.WithNewSnapshot(instanceID+"-snapshot", image)(ctx, client, c)
+	// }
 
 	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := r.Client.NewContainer(
@@ -155,8 +227,8 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 		instanceID,
 		containerd.WithImage(image),
 		containerd.WithSnapshotter(snapshotter),
-		// containerd.WithNewSnapshot(instanceID+"-snapshot", image),
-		wrapper,
+		containerd.WithNewSnapshot(instanceID+"-snapshot", image),
+		// wrapper,
 		containerd.WithNewSpec(oci.WithImageConfig(image),
 			oci.WithHostname(instanceID),
 			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
@@ -211,6 +283,7 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 	}
 
 	cniID := cninetwork.NetID(task)
+
 	return &CtrInstance{
 		LambdaName:     serviceName,
 		ID:             id,
@@ -220,6 +293,8 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 		cniID:          cniID,
 		status:         IDLE,
 		depolyDecision: COLD_START,
+		originalCtrID:  name,
+		lastActive:     time.Now(),
 	}, nil
 }
 
@@ -233,17 +308,6 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	if len(req.Secrets) > 0 {
 		return nil, fmt.Errorf("switch do not support secrets for now")
 	}
-	begin := time.Now()
-	defer func() {
-		if err == nil {
-			if err = metrics.GetMetricLogger().Emit(pkg.SwitchLatencyMetric, req.Service, time.Since(begin)); err != nil {
-				log.Printf("[Error] Emit SwitchLatencyMetric failed %s", err)
-			}
-			if err = metrics.GetMetricLogger().Emit(pkg.SwitchCountMetric, req.Service, 1); err != nil {
-				log.Printf("[Error] Emit SwitchCountMetric failed %s", err)
-			}
-		}
-	}()
 	serviceName := req.Service
 
 	start := time.Now()
@@ -262,8 +326,10 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		// TODO(huang-jl) for better performance, we need modify it to 0
 		CRIULogLevel: 4,
 	}
+	start = time.Now()
 	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
 		int(candidate.Pid), config)
+	log.Printf("switchFor %s spent %s", serviceName, time.Since(start))
 	if err != nil {
 		return nil, errors.Wrapf(err, "switch from %s to %s failed", candidate.LambdaName, serviceName)
 	}
@@ -271,6 +337,8 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	if newPid <= 0 {
 		return nil, fmt.Errorf("switchDeploy get wierd process id %d", newPid)
 	}
+	// reap the child
+	r.reapCh <- newPid
 
 	if appOverlay == nil {
 		return nil, fmt.Errorf("appOverlay is null when switch deploy!\n")
@@ -282,7 +350,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	newInstance.Pid = newPid
 	newInstance.appOverlay = appOverlay
 	newInstance.depolyDecision = SWITCH
-	// ipaddress, cniID, rootfs will not change
+	// ipaddress, cniID, rootfs, originalCtrID will not change
 	return newInstance, nil
 }
 
@@ -428,4 +496,28 @@ func getOSMounts() []specs.Mount {
 		Options:     []string{"rbind", "ro"},
 	})
 	return mounts
+}
+
+func (r CtrRuntime) KillInstance(ctrInstance *CtrInstance) error {
+	pid := ctrInstance.Pid
+	// remove cni network first (it needs network ns)
+	err := r.cni.Remove(context.Background(), ctrInstance.cniID,
+		fmt.Sprintf("/proc/%d/ns/net", pid))
+	if err != nil {
+		return errors.Wrapf(err, "remove cni network for %s failed\n", ctrInstance.cniID)
+	}
+	// kill process
+	err = syscall.Kill(pid, syscall.SIGKILL)
+	if err != nil {
+		return errors.Wrapf(err, "kill process %d failed\n", pid)
+	}
+	// umount app overlay (so that remove ctr from container will succeed)
+	r.rootfsManager.recyleAppOverlay(ctrInstance)
+	// remove from containerd
+	ctrInstance.status = INVALID
+	ctx := namespaces.WithNamespace(context.Background(), pkg.DefaultFunctionNamespace)
+	if err = service.Remove(ctx, r.Client, ctrInstance.originalCtrID); err != nil {
+		return err
+	}
+	return nil
 }

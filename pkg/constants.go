@@ -1,5 +1,7 @@
 package pkg
 
+import "time"
+
 const (
 	// DefaultFunctionNamespace is the default containerd namespace functions are created
 	DefaultFunctionNamespace = "openfaas-fn"
@@ -39,10 +41,16 @@ const (
 	SwitchCountMetric      = "switch-count"
 	ColdStartLatencyMetric = "cold-start-latency"
 	ColdStartCountMetric   = "cold-start-count"
+	ReuseCountMetric       = "reuse-count"
 	InvokeCountMetric      = "invoke-count"
 	PrepareSwitchFSLatency = "prepare-switch-fs-latency"
 	CRIUSwrkLatencyMetric  = "criu-swrk-latency"
 	CRIUHandleNsMetric     = "criu-handle-ns-latency"
 	SwitchKillMetric       = "criu-switch-kill-latency"
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
+
+	BaselineGCInterval  = 5 * time.Second
+	BaselineGCCriterion = 1 * time.Minute
+
+	PopulateCtrNum = 60
 )

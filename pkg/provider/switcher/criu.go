@@ -2,7 +2,6 @@ package switcher
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +16,7 @@ import (
 	criurpc "github.com/checkpoint-restore/go-criu/v5/rpc"
 	"github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/metrics"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -113,13 +113,16 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	cmd := exec.Command("criu", args...)
 
 	cmd.Stdin = nil
-	// By huang-jl: if want to see the ouput from container after restoring
+	// NOTE By huang-jl: if want to see the ouput from container after restoring
 	// then use redirectSwitchOutput(). By default, the stdout, stderr will
 	// be directed to /dev/null
 	// if err := redirectSwitchOutput(cmd, opts); err != nil {
-	// 	return err
+	// 	return errors.Wrap(err, "redirectSwitchOutput")
 	// }
 
+	// NOTE by huang-jl: I choose not to clone_into_cgroup here, but
+	// using it in CRIU when clone process.
+	// Because it will bring CRIU process itself into cgroup, which might cause OOM.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		UseCgroupFD: true,
 		CgroupFD:    int(opts.CgroupFD),
@@ -136,7 +139,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	// log.Printf("start criu swrk ts: %d", start.UnixMicro())
 	// [start itself: 391us]
 	if err := cmd.Start(); err != nil {
-		return err
+		return errors.Wrap(err, "criu cmd Start()")
 	}
 	err = metrics.GetMetricLogger().Emit(pkg.CRIUSwrkCmdStartMetric, switcher.checkpoint, time.Since(start))
 	if err != nil {
@@ -211,7 +214,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			req.Opts.StatusFd = nil
 		}
 		if err != nil {
-			return err
+			return errors.Wrap(err, "criuClientCon.ReadMsgUnix()")
 		}
 		if n == 0 {
 			return errors.New("unexpected EOF")
@@ -252,7 +255,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			}
 			_, err = criuClientCon.Write(data)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "criuClientCon.Write()")
 			}
 			continue
 		case t == criurpc.CriuReqType_RESTORE:
@@ -274,7 +277,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	// Here we want to wait only the CRIU process.
 	criuProcessState, err = criuProcess.Wait()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "criuProcess.Wait()")
 	}
 
 	log.Printf("wait for criu %s", time.Since(start))

@@ -10,7 +10,7 @@ import (
 	faasd "github.com/openfaas/faasd/pkg"
 )
 
-const watchdogPort = 8080
+const watchdogPort = "8080"
 
 type InvokeResolver struct {
 	client *containerd.Client
@@ -31,10 +31,18 @@ func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
 	}
 
 	function, err := GetFunction(i.client, actualFunctionName, namespace)
+  if err != nil {
+		return url.URL{}, err
+  }
 
 	serviceIP := function.IP
+	port, ok := function.envVars["port"]
+	if !ok {
+		port = watchdogPort
+	}
 
-	urlStr := fmt.Sprintf("http://%s:%d", serviceIP, watchdogPort)
+	urlStr := fmt.Sprintf("http://%s:%s", serviceIP, port)
+  log.Printf("resolve %s to %s", functionName, urlStr)
 
 	urlRes, err := url.Parse(urlStr)
 	if err != nil {

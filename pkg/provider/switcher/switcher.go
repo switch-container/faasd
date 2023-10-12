@@ -110,31 +110,34 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	var extraFiles []*os.File
 	defer func() {
 		// close all fds
+		start := time.Now()
 		for _, fd := range extraFiles {
 			fd.Close()
 		}
+		log.Printf("close for %s fd spent %s", switcher.checkpoint, time.Since(start))
 	}()
 
-	// start := time.Now()
+	start := time.Now()
 	// [40us]
 	if err = handleSwitchNamespaces(rpcOpts, pid, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle switch namespace failed")
 	}
 	// metrics.GetMetricLogger().Emit(pkg.CRIUHandleNsMetric, switcher.checkpoint, time.Since(start))
+	log.Printf("handle switch namespace for %s spent %s", switcher.checkpoint, time.Since(start))
 
-	// start = time.Now()
+	start = time.Now()
 	// [10us]
 	if err = handlePseudoMMDrv(rpcOpts, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle pseudo mm drv failed")
 	}
-	// log.Printf("handle pseudo mm drv %s, ", time.Since(start))
+	log.Printf("handle pseudo mm drv %s, ", time.Since(start))
 
-	// start = time.Now()
+	start = time.Now()
 	// [50us]
 	if err = applyCgroup(pid, rpcOpts, criuOpts); err != nil {
 		return errors.Wrap(err, "apply cgroup failed")
 	}
-	// log.Printf("apply cgroup %s, ", time.Since(start))
+	log.Printf("apply cgroup %s, ", time.Since(start))
 
 	// TODO(huang-jl) kill process in another goroutine (async)
 	// kill process sometimes takes about 4ms - 5ms.
@@ -142,7 +145,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	// But pay attention: if we do it async, we have to use another
 	// port (e.g., 5001) for restored process. Or else it may conflict
 	// with original process in the same net namespace.
-	start := time.Now()
+	start = time.Now()
 	if err = syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		return errors.Wrapf(err, "kill original process %d failed", pid)
 	}
@@ -236,13 +239,16 @@ func handleSwitchNamespaces(rpcOpts *criurpc.CriuOpts, pid int, extraFiles *[]*o
 // 1. parse the cgroup of process pid, adding them to CgroupRoot (for CRIU to rewrite)
 // 2. Add CgroupYard, so CRIU will not need mount CGROUP2 fs
 func applyCgroup(pid int, rpcOpts *criurpc.CriuOpts, criuOpts *CriuOpts) error {
+	var cgroupFile *os.File
+
 	path := fmt.Sprintf("/proc/%d/cgroup", pid)
 	cgroupsPaths, err := ParseCgroupFile(path)
-	var cgroupFile *os.File
 	if err != nil {
 		return err
 	}
-
+	if len(cgroupsPaths) != 1 {
+		return fmt.Errorf("Please make sure you are using cgroup v2")
+	}
 	log.Printf("cgroup paths: %+v\n", cgroupsPaths)
 	for c, p := range cgroupsPaths {
 		cgroupRoot := &criurpc.CgroupRoot{
@@ -356,12 +362,6 @@ func SwitchFor(checkpoint, checkpointDir string, pid int, config SwitcherConfig)
 
 	if err := switcher.doSwitch(pid); err != nil {
 		return nil, err
-	}
-
-	{
-		// we need reap the new process by our own
-		process := switcher.process.cmd.Process
-		go process.Wait()
 	}
 	return switcher, nil
 }

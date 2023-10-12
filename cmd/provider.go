@@ -37,9 +37,19 @@ func makeProviderCmd() *cobra.Command {
 	}
 
 	command.Flags().String("pull-policy", "Always", `Set to "Always" to force a pull of images upon deployment, or "IfNotPresent" to try to use a cached image.`)
+	command.Flags().Bool("baseline", false, `Set true to running in baseline mode (e.g., do container GC and disable switch).`)
+	command.Flags().Bool("no-bgtask", false, `Set true to to disable background task (e.g. legacy faasd mode)`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
+		if flagErr != nil {
+			return flagErr
+		}
+		isBaseline, flagErr := command.Flags().GetBool("baseline")
+		if flagErr != nil {
+			return flagErr
+		}
+		noBgTask, flagErr := command.Flags().GetBool("no-bgtask")
 		if flagErr != nil {
 			return flagErr
 		}
@@ -86,10 +96,35 @@ func makeProviderCmd() *cobra.Command {
 		}
 		defer client.Close()
 
-		m, err := provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{})
+		var (
+			m      *provider.LambdaManager
+			bgTask []provider.BackgroundTask
+		)
+		if isBaseline {
+			bgTask = []provider.BackgroundTask{
+				// only for baseline
+				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval, pkg.BaselineGCCriterion),
+			}
+			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{})
+		} else {
+			// TODO(huang-jl) initialize some containers (e.g. 100 or 200) for non-baseline cases
+			bgTask = []provider.BackgroundTask{
+				// only for baseline
+				provider.NewPopulateCtrBackgroundTask(pkg.PopulateCtrNum),
+			}
+			m, err = provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{})
+		}
 		if err != nil {
 			return err
 		}
+
+		// start background task
+		if !noBgTask {
+			for _, t := range bgTask {
+				go t.Run(m)
+			}
+		}
+
 		// init metric
 		metricLogger := metrics.GetMetricLogger()
 		for _, m := range []struct {
@@ -100,6 +135,7 @@ func makeProviderCmd() *cobra.Command {
 			{pkg.SwitchCountMetric, metrics.FIND_GRAINED_COUNTER},
 			{pkg.ColdStartLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.ColdStartCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.ReuseCountMetric, metrics.FIND_GRAINED_COUNTER},
 			{pkg.InvokeCountMetric, metrics.SINGLE_COUNTER},
 
 			{pkg.PrepareSwitchFSLatency, metrics.LATENCY_METRIC},
@@ -111,6 +147,7 @@ func makeProviderCmd() *cobra.Command {
 			metricLogger.RegisterMetric(m.name, m.ty)
 		}
 
+		// handler for linux signal
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 		wg := sync.WaitGroup{}
@@ -118,7 +155,7 @@ func makeProviderCmd() *cobra.Command {
 		go func() {
 			<-sig
 			log.Println("Signal received.. shutting down server")
-			m.ShutdownAll()
+			m.Shutdown()
 			wg.Done()
 		}()
 

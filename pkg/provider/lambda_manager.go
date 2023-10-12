@@ -1,9 +1,11 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/containerd/containerd"
 	gocni "github.com/containerd/go-cni"
@@ -14,11 +16,12 @@ import (
 // Note by huang-jl: In our workload,
 // after adding a lambda, it will not be deleted
 type LambdaManager struct {
-	pools   map[string]*CtrPool
-	lambdas []string
-	mu      sync.RWMutex
-	policy  DeployPolicy
-	Runtime CtrRuntime
+	pools     map[string]*CtrPool
+	lambdas   []string
+	mu        sync.RWMutex
+	policy    DeployPolicy
+	Runtime   CtrRuntime
+	terminate bool
 }
 
 type ContainerStatus string
@@ -54,13 +57,9 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 	m := &LambdaManager{
 		pools:  map[string]*CtrPool{},
 		policy: policy,
-		Runtime: CtrRuntime{
-			Client:          client,
-			cni:             cni,
-			rootfsManager:   rootfsManager,
-			checkpointCache: checkpointCache,
-			alwaysPull:      false,
-		},
+		// TODO(huang-jl) adjust the concurrency of cold start
+		Runtime:   NewCtrRuntime(client, cni, rootfsManager, checkpointCache, false, 10),
+		terminate: false,
 	}
 	return m, nil
 }
@@ -96,8 +95,14 @@ func (m *LambdaManager) GetCtrPoolWOLock(lambdaName string) (*CtrPool, error) {
 // For a new invocation, we need make a CtrInstance for it.
 // Whether this CtrInstance from REUSE, SWITCH or COLD_START
 // is the detail hidden by this method.
-func (m *LambdaManager) MakeCtrInstanceFor(lambdaName string) (*CtrInstance, error) {
-	depolyRes, err := m.policy.Decide(m, lambdaName)
+func (m *LambdaManager) MakeCtrInstanceFor(ctx context.Context, lambdaName string) (*CtrInstance, error) {
+	var (
+		depolyRes DeployResult
+		err       error
+		id        uint64
+	)
+restart:
+	depolyRes, err = m.policy.Decide(m, lambdaName)
 	if err != nil {
 		return nil, err
 	}
@@ -108,15 +113,30 @@ func (m *LambdaManager) MakeCtrInstanceFor(lambdaName string) (*CtrInstance, err
 	req := depolyRes.pool.requirement
 	switch depolyRes.decision {
 	case COLD_START:
-		id := depolyRes.pool.idAllocator.Add(1)
+		if id == 0 {
+			id = depolyRes.pool.idAllocator.Add(1)
+		}
+		instance, err := m.Runtime.ColdStart(req, id)
+		if errors.Is(err, ColdStartTooMuchError) {
+			// NOTE by huang-jl: only COLD_START can retry
+			// since it does not modify (i.e. no side-effect) CtrPool's free or busy pool
+			select {
+			case <-ctx.Done():
+				return nil, errors.Wrapf(ctx.Err(), "timeout MakeCtrInstanceFor %s spent more than 30 seconds", lambdaName)
+			case <-time.After(50 * time.Millisecond):
+				goto restart
+			}
+		}
 		log.Printf("cold start for %s-%d", lambdaName, id)
-		return m.Runtime.ColdStart(req, id)
+		return instance, err
 	case REUSE:
-		log.Printf("reuse container for %s-%d", lambdaName, depolyRes.instance.ID)
+		log.Printf("reuse container %s-%d", lambdaName, depolyRes.instance.ID)
 		depolyRes.instance.depolyDecision = REUSE
 		return depolyRes.instance, nil
 	case SWITCH:
-		id := depolyRes.pool.idAllocator.Add(1)
+		if id == 0 {
+			id = depolyRes.pool.idAllocator.Add(1)
+		}
 		log.Printf("switch from old %s-%d for new %s-%d", depolyRes.instance.LambdaName, depolyRes.instance.ID, lambdaName, id)
 		return m.Runtime.SwitchStart(req, id, depolyRes.instance)
 	}
@@ -139,22 +159,28 @@ func (m *LambdaManager) ListInstances() ([]*CtrInstance, error) {
 	return res, nil
 }
 
-// clean **ALL** running instances if possible
-func (m *LambdaManager) ShutdownAll() {
+func (m *LambdaManager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.terminate = true
+	m.killAllInstances()
+	close(m.Runtime.workerCh)
+}
+
+// clean **ALL** running instances if possible
+func (m *LambdaManager) killAllInstances() {
 	log.Print("Start shutdown all instances of LambdaManager...\n")
 
 	for _, pool := range m.pools {
 		for _, ctrInstance := range pool.free {
 			if ctrInstance.status.Valid() {
-				KillInstance(ctrInstance, m.Runtime.cni)
+				m.Runtime.KillInstance(ctrInstance)
 			}
 		}
 
 		for _, ctrInstance := range pool.busy {
 			if ctrInstance.status.Valid() {
-				KillInstance(ctrInstance, m.Runtime.cni)
+				m.Runtime.KillInstance(ctrInstance)
 			}
 		}
 	}

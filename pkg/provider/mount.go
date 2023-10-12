@@ -160,6 +160,17 @@ func (m *RootfsManager) getAppOverlayFromCache(serviceName string) (*OverlayInfo
 	return res, nil
 }
 
+// umount app overlay and put it into app overlay cache
+func (m *RootfsManager) recyleAppOverlay(ctrInstance *CtrInstance) {
+	if ctrInstance.appOverlay == nil {
+		return
+	}
+	targetBindPath := path.Join(ctrInstance.rootfs.merged, "home/app")
+	unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
+	m.putAppOverlayToCache(ctrInstance.LambdaName, ctrInstance.appOverlay)
+	ctrInstance.appOverlay = nil
+}
+
 // I choose one goroutine to do fill overlaycache job
 func (m *RootfsManager) fillAppOverlayCache(serviceName string, num int) error {
 	appOverlays := make([]*OverlayInfo, num)
@@ -261,17 +272,14 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInstance) (*OverlayInfo, error) {
 	start := time.Now()
 	targetBindPath := path.Join(oldInfo.rootfs.merged, "home/app")
-	if oldInfo.appOverlay != nil {
-		unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
-		m.putAppOverlayToCache(oldInfo.LambdaName, oldInfo.appOverlay)
-		oldInfo.appOverlay = nil
-	}
-	log.Printf("unmount old app dir spent %s\n", time.Since(start))
+	m.recyleAppOverlay(oldInfo)
+	log.Printf("unmount old app dir for %s spent %s\n", serviceName, time.Since(start))
 
 	start = time.Now()
 	appOverlay, err := m.getAppOverlayFromCache(serviceName)
 	if err != nil {
 		if errors.Is(err, ErrAppOverlayNotFind) {
+      log.Printf("prepare switch rootfs for %s sync!", serviceName)
 			appOverlay, err = m.PrepareAppOverlay(serviceName, true)
 			if err != nil {
 				return nil, errors.Wrapf(err, "prepare app overlay for %s failed", serviceName)

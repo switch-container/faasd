@@ -29,7 +29,9 @@ const (
 type DeployResult struct {
 	decision DeployDecision
 	instance *CtrInstance
-	pool     *CtrPool // ctr pool of lambda that need to be depolyed
+	// NOTE by huang-jl: this field point to ctr pool of lambda
+	// that need to be depolyed (mabye not the same as `instance`)
+	pool *CtrPool
 }
 
 // Decide whether depoly a new container or not
@@ -94,6 +96,36 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res Depl
 	}
 
 cold_start_routine:
+	res.decision = COLD_START
+	return
+}
+
+type BaselinePolicy struct{}
+
+func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployResult, err error) {
+	var (
+		instance *CtrInstance
+		pool     *CtrPool
+	)
+
+	// targetPool is the pool of `lambdaName`
+	pool, err = m.GetCtrPool(lambdaName)
+	if err != nil {
+		return
+	}
+	res.pool = pool
+	instance = pool.PopFromFree()
+	if instance != nil {
+		if !instance.status.Valid() {
+			err = fmt.Errorf("detect invalid status instance: %+v", instance)
+			return
+		}
+		res.decision = REUSE
+		res.instance = instance
+		return
+	}
+
+	// if we cannot reuse, then cold-start
 	res.decision = COLD_START
 	return
 }
