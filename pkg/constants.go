@@ -52,5 +52,6 @@ const (
 	BaselineGCInterval  = 5 * time.Second
 	BaselineGCCriterion = 1 * time.Minute
 
-	PopulateCtrNum = 60
+	PopulateCtrNum            = 60
+	ColdStartConcurrencyLimit = 10
 )

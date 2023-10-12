@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"path"
@@ -26,12 +25,16 @@ import (
 	"github.com/openfaas/faasd/pkg/provider/switcher"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const annotationLabelPrefix = "com.openfaas.annotations."
 
 var ColdStartTooMuchError = fmt.Errorf("cold start rate reach limitation")
+var crlogger = log.With().
+	Str("component", "[CtrRuntime]").
+	Logger()
 
 type ColdStartReq struct {
 	req    types.FunctionDeployment
@@ -161,13 +164,14 @@ func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeploym
 	}
 
 	size, _ := image.Size(ctx)
-	log.Printf("Image for: %s size: %d, took: %fs\n", image.Name(), size, time.Since(start).Seconds())
+	crlogger.Debug().Str("name", image.Name()).Int64("size", size).
+		Float64("overhead (s)", time.Since(start).Seconds()).Msg("Image for")
 
 	return image, nil
 }
 
 func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
-	log.Printf("cold start %s for request %+v", instanceID, req)
+	crlogger.Debug().Str("instance", instanceID).Msg("cold start instance")
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
 		snapshotter = val
@@ -194,7 +198,8 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 
 		qty, err := resource.ParseQuantity(req.Limits.Memory)
 		if err != nil {
-			log.Printf("error parsing (%q) as quantity: %s", req.Limits.Memory, err.Error())
+			crlogger.Error().Err(err).Str("memory", req.Limits.Memory).Msg("parsing as quantity failed")
+			return nil, err
 		}
 		v := qty.Value()
 		memory.Limit = &v
@@ -316,7 +321,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		return nil, err
 	}
 	if err = metrics.GetMetricLogger().Emit(pkg.PrepareSwitchFSLatency, serviceName, time.Since(start)); err != nil {
-		log.Printf("emit PrepareSwitchFSLatency metric failed: %s", err)
+		crlogger.Error().Err(err).Msg("emit PrepareSwitchFSLatency metric failed")
 	}
 
 	// TODO(huang-jl) change the work directory structure ?
@@ -324,12 +329,12 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 4,
+		CRIULogLevel: 0,
 	}
 	start = time.Now()
 	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
 		int(candidate.Pid), config)
-	log.Printf("switchFor %s spent %s", serviceName, time.Since(start))
+	crlogger.Debug().Str("lambda name", serviceName).Dur("overhead", time.Since(start)).Msg("SwitchFor")
 	if err != nil {
 		return nil, errors.Wrapf(err, "switch from %s to %s failed", candidate.LambdaName, serviceName)
 	}
@@ -388,12 +393,12 @@ func (r CtrRuntime) createTask(ctx context.Context, container containerd.Contain
 		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
 	}
 
-	log.Printf("Container ID: %s\tTask ID %s:\tTask PID: %d\t\n", name, task.ID(), task.Pid())
+	crlogger.Info().Str("Task ID", task.ID()).Str("Container ID", name).Uint32("Task PID", task.Pid()).Send()
 
 	start := time.Now()
 	labels := map[string]string{}
 	_, err := cninetwork.CreateCNINetwork(ctx, r.cni, task, labels)
-	log.Printf("create network latency: %s", time.Since(start))
+	crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
 
 	if err != nil {
 		return err
@@ -404,7 +409,7 @@ func (r CtrRuntime) createTask(ctx context.Context, container containerd.Contain
 		return err
 	}
 
-	log.Printf("%s has IP: %s.\n", name, ip)
+	crlogger.Info().Str("IP", ip).Str("Container ID", name).Send()
 
 	_, waitErr := task.Wait(ctx)
 	if waitErr != nil {

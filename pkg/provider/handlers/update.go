@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 
 	"github.com/containerd/containerd"
@@ -16,6 +15,7 @@ import (
 	"github.com/openfaas/faasd/pkg/cninetwork"
 	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/service"
+	"github.com/rs/zerolog/log"
 )
 
 // TODO(huang-jl) Remove update handler

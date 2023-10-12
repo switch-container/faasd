@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 
 	"github.com/containerd/containerd"
@@ -17,6 +16,7 @@ import (
 	cninetwork "github.com/openfaas/faasd/pkg/cninetwork"
 	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/service"
+	"github.com/rs/zerolog/log"
 )
 
 func MakeDeleteHandler(client *containerd.Client, cni gocni.CNI) func(w http.ResponseWriter, r *http.Request) {

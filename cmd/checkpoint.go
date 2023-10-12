@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -19,6 +18,7 @@ import (
 	"github.com/openfaas/faasd/pkg"
 	faasd "github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -119,7 +119,7 @@ func parseCheckpointConfig(cmd *cobra.Command) (*checkpointConfig, error) {
 	}
 	pseudoMMDrvFile, err := os.Open("/dev/pseudo_mm")
 	if err != nil {
-		log.Printf("cannot open /dev/pseudo_mm (%s), are you using our linux kernel ?", err)
+		log.Error().Err(err).Msg("cannot open /dev/pseudo_mm (%s), are you using our linux kernel ?")
 		return parsed, err
 	}
 	pgoff, err := cmd.Flags().GetInt("pgoff")
@@ -166,7 +166,7 @@ func runCheckpoint(cmd *cobra.Command, args []string) error {
 	defer func() {
 		config.pseudoMMDrv.Close()
 	}()
-	log.Printf("checkpoint config: %+v", config)
+	log.Info().Msgf("checkpoint config: %+v", config)
 	// create a new containerd client
 	// the timeout here is time of dial (i.e. establish connection)
 	client, err := containerd.New(config.containerdAddr, containerd.WithTimeout(15*time.Second))
@@ -183,14 +183,14 @@ func runCheckpoint(cmd *cobra.Command, args []string) error {
 	for _, ctrId := range args {
 		info, err := initCheckpointInfo(client, ctrId, config)
 		if err != nil {
-			log.Printf("init checkpoint info for %s failed: %s\n", ctrId, err)
+			log.Error().Err(err).Str("container id", ctrId).Msg("init checkpoint info failed")
 			return err
 		}
 		ckptInfos[ctrId] = info
 
-		log.Printf("start checkpoint %s...\n", ctrId)
+		log.Info().Str("container id", ctrId).Msg("start checkpoint...")
 		if err := createOneCheckpoint(client, config, info); err != nil {
-			log.Printf("create checkpoint for %s failed: %s\n", ctrId, err)
+			log.Error().Err(err).Str("container id", ctrId).Msg("create checkpoint failed")
 			return err
 		}
 	}
@@ -202,7 +202,7 @@ func runCheckpoint(cmd *cobra.Command, args []string) error {
 		info := ckptInfos[ctrId]
 		// first convert checkpoint
 		// then we can get the dax page num
-		log.Printf("start CONVERT checkpoint %s at pgoff %x...\n", ctrId, daxPgOff)
+		log.Info().Str("container id", ctrId).Int("dax pgoff", daxPgOff).Msg("start CONVERT checkpoint")
 		if err := convertOneCheckpoint(config, info, daxPgOff); err != nil {
 			return err
 		}
@@ -224,7 +224,7 @@ func getCkptDaxPageNum(info *checkpointInfo) (int, error) {
 	}
 	pageNum, err := strconv.Atoi(string(content))
 	if err != nil {
-		log.Printf("get dax page num after convert failed: %s\n", err)
+		log.Error().Err(err).Msg("get dax page num after convert failed")
 		return -1, err
 	}
 	if pageNum < 0 {
@@ -237,7 +237,7 @@ func getContainer(ctx context.Context, client *containerd.Client, containerID st
 	ctr, err := client.LoadContainer(ctx, containerID)
 	if err != nil {
 		if containerderrors.IsNotFound(err) {
-			log.Printf("get Init process failed: not found containerd %s\n", containerID)
+			log.Error().Str("container id", containerID).Msg("get Init process fail to found containerd")
 		}
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func createOneCheckpoint(client *containerd.Client, config *checkpointConfig, in
 	// And the img returned here is supposed to be empty
 	ctx := namespaces.WithNamespace(context.Background(), config.namespace)
 	img, err := info.process.(containerd.Task).Checkpoint(ctx, opts...)
-	log.Printf("checkpoint img: %+v\n", img)
+	log.Debug().Msgf("checkpoint img: %+v\n", img)
 	if err != nil {
 		return err
 	}

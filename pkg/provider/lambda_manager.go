@@ -3,15 +3,20 @@ package provider
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/containerd/containerd"
 	gocni "github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
+	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 )
+
+var lmlogger = log.With().
+	Str("component", "[LambdaManager]").
+	Logger()
 
 // Note by huang-jl: In our workload,
 // after adding a lambda, it will not be deleted
@@ -55,10 +60,9 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 	}
 	checkpointCache := NewCheckpointCache()
 	m := &LambdaManager{
-		pools:  map[string]*CtrPool{},
-		policy: policy,
-		// TODO(huang-jl) adjust the concurrency of cold start
-		Runtime:   NewCtrRuntime(client, cni, rootfsManager, checkpointCache, false, 10),
+		pools:     map[string]*CtrPool{},
+		policy:    policy,
+		Runtime:   NewCtrRuntime(client, cni, rootfsManager, checkpointCache, false, pkg.ColdStartConcurrencyLimit),
 		terminate: false,
 	}
 	return m, nil
@@ -66,7 +70,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 
 func (m *LambdaManager) RegisterLambda(req types.FunctionDeployment) {
 	lambdaName := req.Service
-	log.Printf("[LambdaManager] registering lambda %s\n", lambdaName)
+	lmlogger.Info().Str("lambda name", lambdaName).Msg("registering new lambda")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.pools[lambdaName]; !ok {
@@ -127,17 +131,18 @@ restart:
 				goto restart
 			}
 		}
-		log.Printf("cold start for %s-%d", lambdaName, id)
+		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", id).Msg("cold start")
 		return instance, err
 	case REUSE:
-		log.Printf("reuse container %s-%d", lambdaName, depolyRes.instance.ID)
+		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", depolyRes.instance.ID).Msg("reuse ctr")
 		depolyRes.instance.depolyDecision = REUSE
 		return depolyRes.instance, nil
 	case SWITCH:
 		if id == 0 {
 			id = depolyRes.pool.idAllocator.Add(1)
 		}
-		log.Printf("switch from old %s-%d for new %s-%d", depolyRes.instance.LambdaName, depolyRes.instance.ID, lambdaName, id)
+		lmlogger.Debug().Str("new lambda", lambdaName).Uint64("new id", depolyRes.instance.ID).
+			Str("old lambda", depolyRes.pool.lambdaName).Uint64("old id", depolyRes.instance.ID).Msg("switch ctr")
 		return m.Runtime.SwitchStart(req, id, depolyRes.instance)
 	}
 	return nil, fmt.Errorf("unknown decision: %+v", depolyRes.decision)
@@ -169,7 +174,7 @@ func (m *LambdaManager) Shutdown() {
 
 // clean **ALL** running instances if possible
 func (m *LambdaManager) killAllInstances() {
-	log.Print("Start shutdown all instances of LambdaManager...\n")
+	lmlogger.Info().Msg("Start shutdown all instances of LambdaManager...")
 
 	for _, pool := range m.pools {
 		for _, ctrInstance := range pool.free {

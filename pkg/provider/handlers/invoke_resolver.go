@@ -2,12 +2,12 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 	"net/url"
 	"strings"
 
 	"github.com/containerd/containerd"
 	faasd "github.com/openfaas/faasd/pkg"
+	"github.com/rs/zerolog/log"
 )
 
 const watchdogPort = "8080"
@@ -22,7 +22,7 @@ func NewInvokeResolver(client *containerd.Client) *InvokeResolver {
 
 func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
 	actualFunctionName := functionName
-	log.Printf("Resolve: %q\n", functionName)
+	log.Debug().Str("function name", functionName).Msg("InvokeResolve resolve")
 
 	namespace := getNamespaceOrDefault(functionName, faasd.DefaultFunctionNamespace)
 
@@ -31,9 +31,9 @@ func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
 	}
 
 	function, err := GetFunction(i.client, actualFunctionName, namespace)
-  if err != nil {
+	if err != nil {
 		return url.URL{}, err
-  }
+	}
 
 	serviceIP := function.IP
 	port, ok := function.envVars["port"]
@@ -42,7 +42,7 @@ func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
 	}
 
 	urlStr := fmt.Sprintf("http://%s:%s", serviceIP, port)
-  log.Printf("resolve %s to %s", functionName, urlStr)
+	log.Debug().Str("function name", functionName).Str("url", urlStr).Msg("resolve")
 
 	urlRes, err := url.Parse(urlStr)
 	if err != nil {

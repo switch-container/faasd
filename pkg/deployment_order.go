@@ -1,9 +1,8 @@
 package pkg
 
 import (
-	"log"
-
 	"github.com/openfaas/faasd/pkg/depgraph"
+	"github.com/rs/zerolog/log"
 )
 
 func buildDeploymentOrder(svcs []Service) []string {

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"github.com/containerd/containerd/remotes/docker"
 	"github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,12 +40,12 @@ func Remove(ctx context.Context, client *containerd.Client, name string) error {
 		if taskFound {
 			status, err := t.Status(ctx)
 			if err != nil {
-				log.Printf("Unable to get status for: %s, error: %s", name, err.Error())
+				log.Error().Err(err).Str("name", name).Msg("Unable to get status")
 			} else {
-				log.Printf("Status of %s is: %s\n", name, status.Status)
+				log.Debug().Str("name", name).Str("status", string(status.Status)).Msg("service remove")
 			}
 
-			log.Printf("Need to kill task: %s\n", name)
+			log.Debug().Str("name", name).Msg("Need to kill task")
 			if err = killTask(ctx, t); err != nil {
 				return fmt.Errorf("error killing task %s, %s, %w", container.ID(), name, err)
 			}
@@ -79,12 +79,12 @@ func killTask(ctx context.Context, task containerd.Task) error {
 		if task != nil {
 			wait, err := task.Wait(ctx)
 			if err != nil {
-				log.Printf("error waiting on task: %s", err)
+				log.Error().Err(err).Msg("error waiting on task")
 				return
 			}
 
 			if err := task.Kill(ctx, unix.SIGTERM, containerd.WithKillAll); err != nil {
-				log.Printf("error killing container task: %s", err)
+				log.Error().Err(err).Msg("error killing container task")
 			}
 
 			select {
@@ -93,7 +93,7 @@ func killTask(ctx context.Context, task containerd.Task) error {
 				return
 			case <-time.After(killTimeout):
 				if err := task.Kill(ctx, unix.SIGKILL, containerd.WithKillAll); err != nil {
-					log.Printf("error force killing container task: %s", err)
+					log.Error().Err(err).Msg("error force killing container task")
 				}
 				return
 			}
@@ -148,7 +148,7 @@ func PrepareImage(ctx context.Context, client *containerd.Client, imageName, sna
 	}
 
 	var image containerd.Image
-  log.Printf("pull always: %v", pullAlways)
+	log.Debug().Bool("pull always", pullAlways).Send()
 	if pullAlways {
 		img, err := pullImage(ctx, client, resolver, imageName)
 		if err != nil {

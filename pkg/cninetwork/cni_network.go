@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"os"
 	"path"
@@ -16,6 +15,7 @@ import (
 	"github.com/containerd/containerd"
 	gocni "github.com/containerd/go-cni"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -75,13 +75,17 @@ var defaultCNIConf = fmt.Sprintf(`
 }
 `, defaultNetworkName, defaultBridgeName, defaultSubnet, CNIDataDir)
 
+var cnilogger = log.With().
+	Str("component", "[CNINetwork]").
+	Logger()
+
 // InitNetwork writes configlist file and initializes CNI network
 // 1. write config into /etc/cni/net.d/10-openfaas.conflist
 // 2. initialize a libcni instance
 // 3. load the config (created in step1) into cni instance
 func InitNetwork() (gocni.CNI, error) {
 
-	log.Printf("Writing network config...\n")
+	cnilogger.Info().Msg("Writing network config...")
 	if !dirExists(CNIConfDir) {
 		if err := os.MkdirAll(CNIConfDir, 0755); err != nil {
 			return nil, fmt.Errorf("cannot create directory: %s", CNIConfDir)
@@ -130,11 +134,11 @@ func DeleteCNINetwork(ctx context.Context, cni gocni.CNI, client *containerd.Cli
 	if containerErr == nil {
 		task, err := container.Task(ctx, nil)
 		if err != nil {
-			log.Printf("[Delete] unable to find task for container: %s\n", name)
+			cnilogger.Error().Err(err).Str("name", name).Msg("[Delete] unable to find task for container")
 			return nil
 		}
 
-		log.Printf("[Delete] removing CNI network for: %s\n", task.ID())
+		cnilogger.Info().Str("task id", task.ID()).Msg("[Delete] removing CNI network")
 
 		id := NetID(task)
 		netns := netNamespace(task)
@@ -142,7 +146,7 @@ func DeleteCNINetwork(ctx context.Context, cni gocni.CNI, client *containerd.Cli
 		if err := cni.Remove(ctx, id, netns); err != nil {
 			return errors.Wrapf(err, "Failed to remove network for task: %q, %v", id, err)
 		}
-		log.Printf("[Delete] removed: %s from namespace: %s, ID: %s\n", name, netns, id)
+		cnilogger.Info().Str("name", name).Str("namespace", netns).Str("id", id).Msg("[Delete] removd")
 
 		return nil
 	}

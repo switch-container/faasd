@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
 	"github.com/containerd/containerd"
 	"github.com/gorilla/mux"
 	"github.com/openfaas/faas-provider/types"
+	"github.com/rs/zerolog/log"
 )
 
 func MakeMutateNamespace(client *containerd.Client) func(w http.ResponseWriter, r *http.Request) {

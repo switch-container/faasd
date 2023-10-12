@@ -3,18 +3,17 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
-	"github.com/opencontainers/runtime-spec/specs-go"
-
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/namespaces"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/openfaas/faasd/pkg"
 	faasd "github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/cninetwork"
 	"github.com/openfaas/faasd/pkg/provider"
+	"github.com/rs/zerolog/log"
 )
 
 // TODO(huang-jl) change the Function metadata

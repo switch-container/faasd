@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/rs/zerolog/log"
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg/provider"
 )

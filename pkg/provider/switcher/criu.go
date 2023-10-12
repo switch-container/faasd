@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -17,7 +16,8 @@ import (
 	"github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/metrics"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 )
@@ -42,19 +42,17 @@ type CriuOpts struct {
 	LsmProfile              string             // LSM profile used to restore the container
 	LsmMountContext         string             // LSM mount context value to use during restore
 	Switch                  bool               // switch to an existing container
-	CgroupFD                uintptr            // File Descriptor to Set when exec CRIU swrk
+	CgroupFile              *os.File           // File Descriptor to Set when exec CRIU swrk (i.e. CLONE_INTO_CGROUP)
 }
 
 func bindLoggingPipe(pipe io.Reader, output io.WriteCloser) {
-	logFlags := log.Flags()
-	prefix := log.Prefix()
-	logger := log.New(output, prefix, logFlags)
+	logger := zerolog.New(output).With().Timestamp().Logger()
 	scanner := bufio.NewScanner(pipe)
 	go func() {
 		for scanner.Scan() {
-			logger.Printf(scanner.Text())
+			logger.Log().Msg(scanner.Text())
 			if err := scanner.Err(); err != nil {
-				log.Printf("Error scanning: %s", err)
+				log.Error().Err(err).Msg("Error scanning")
 			}
 		}
 		output.Close()
@@ -125,7 +123,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	// Because it will bring CRIU process itself into cgroup, which might cause OOM.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		UseCgroupFD: true,
-		CgroupFD:    int(opts.CgroupFD),
+		CgroupFD:    int(opts.CgroupFile.Fd()),
 	}
 
 	cmd.ExtraFiles = append(cmd.ExtraFiles, criuServer)
@@ -160,13 +158,13 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			criuClientCon.Close()
 			_, err := criuProcess.Wait()
 			if err != nil {
-				logrus.Warnf("wait on criuProcess returned %v", err)
+				swlogger.Warn().Err(err).Msg("wait on criuProcess returned %v")
 			}
 		}
 		// log.Printf("defer function took %s", time.Since(start_))
 	}()
 
-	logrus.Debugf("Using CRIU in %s mode", req.GetType().String())
+	swlogger.Debug().Str("mode", req.GetType().String()).Msg("CRIU mode")
 
 	// [reflect took: 53.6ms]
 	// if logrus.GetLevel() >= logrus.DebugLevel &&
@@ -197,7 +195,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		return err
 	}
 
-	log.Printf("write request elapsed %s\n", time.Since(start))
+	swlogger.Debug().Dur("overhead", time.Since(start)).Msg("write criu request")
 	start = time.Now()
 
 	buf := make([]byte, 10*4096)
@@ -236,7 +234,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		t := resp.GetType()
 		switch {
 		case t == criurpc.CriuReqType_FEATURE_CHECK:
-			logrus.Debugf("Feature check says: %s", resp)
+			swlogger.Debug().Str("resp", resp.String()).Msg("Feature check")
 			// criuFeatures = resp.GetFeatures()
 		case t == criurpc.CriuReqType_NOTIFY:
 			// log.Printf("until recv notify spent %s, ", time.Since(start))
@@ -259,7 +257,8 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			}
 			continue
 		case t == criurpc.CriuReqType_RESTORE:
-			log.Printf("receive RESTORE response from start process %s", time.Since(start))
+			swlogger.Debug().Dur("overhead", time.Since(start)).
+				Msg("receive RESTORE response from loop start")
 		case t == criurpc.CriuReqType_DUMP:
 		case t == criurpc.CriuReqType_PRE_DUMP:
 		default:
@@ -269,7 +268,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		break
 	}
 
-	log.Printf("break from criu conn loop spent %s", time.Since(start))
+	swlogger.Debug().Dur("overhead", time.Since(start)).Msg("break from criu conn loop")
 
 	start = time.Now()
 	_ = criuClientCon.CloseWrite()
@@ -280,7 +279,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		return errors.Wrap(err, "criuProcess.Wait()")
 	}
 
-	log.Printf("wait for criu %s", time.Since(start))
+	swlogger.Debug().Dur("overhead", time.Since(start)).Msg("wait for criu")
 
 	// In pre-dump mode CRIU is in a loop and waits for
 	// the final DUMP command.
@@ -301,7 +300,7 @@ func (switcher *Switcher) criuNotifications(resp *criurpc.CriuResp, cmd *exec.Cm
 		return fmt.Errorf("invalid response: %s", resp.String())
 	}
 	script := notify.GetScript()
-	log.Printf("notify: %s\n", script)
+	swlogger.Debug().Str("notify", script).Msg("criu notification")
 	switch script {
 	case "post-restore":
 		pid := notify.GetPid()

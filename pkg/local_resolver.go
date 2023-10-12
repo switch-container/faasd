@@ -1,8 +1,8 @@
 package pkg
 
 import (
+	"github.com/rs/zerolog/log"
 	"io/ioutil"
-	"log"
 	"os"
 	"strings"
 	"sync"

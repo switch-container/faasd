@@ -1,12 +1,16 @@
 package provider
 
 import (
-	"log"
 	"time"
 
 	"github.com/openfaas/faas-provider/types"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 )
+
+var bglogger = log.With().
+	Str("component", "[BackgroundTask]").
+	Logger()
 
 // Background Task is an abstraction for add cyclical task
 // in faasd system.
@@ -56,10 +60,11 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 
 		// start to gc
 		for _, instance := range toBeGC {
+			instanceID := GetInstanceID(instance.LambdaName, instance.ID)
 			if err := m.Runtime.KillInstance(instance); err != nil {
-				log.Printf("garbage collect instance %s-%d failed: %s", instance.LambdaName, instance.ID, err)
+				bglogger.Error().Err(err).Str("instance", instanceID).Msg("garbage collect instance failed")
 			} else {
-				log.Printf("garbage collect instance %s-%d", instance.LambdaName, instance.ID)
+				bglogger.Debug().Str("instance", instanceID).Msg("garbage collect instance")
 			}
 		}
 	}
@@ -97,10 +102,11 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 	lambdaName := t.baseCtrSpec.Service
 	pool, err := m.GetCtrPool(lambdaName)
 	if err != nil {
-		log.Printf("[PopulateCtrBackgroundTask] error occur when get pool with %s: %s", lambdaName, err)
+		bglogger.Error().Err(err).Str("lambda name", lambdaName).
+			Msg("PopulateCtrBackgroundTask get ctr pool failed")
 	}
 
-	log.Printf("will populate %d dummy containers...", t.num)
+	bglogger.Debug().Int("num", t.num).Msg("start populate dummy containers...")
 	for i := 0; i < t.num; i++ {
 		id := pool.idAllocator.Add(1)
 	retry:
@@ -110,13 +116,14 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 		if errors.Is(err, ColdStartTooMuchError) {
 			goto retry
 		} else if err != nil {
-			log.Printf("[PopulateCtrBackgroundTask] error occur when cold start %s-%d: %s",
-				lambdaName, id, err)
+			bglogger.Error().Err(err).Str("lambda name", lambdaName).Uint64("id", id).
+				Msg("PopulateCtrBackgroundTask cold start failed")
 			break
 		}
 		pool.mu.Lock()
 		pool.free = append(pool.free, instance)
 		pool.mu.Unlock()
-		log.Printf("[PopulateCtrBackgroundTask] populate %s-%d", instance.LambdaName, instance.ID)
+		bglogger.Error().Err(err).Str("lambda name", lambdaName).Uint64("id", instance.ID).
+			Msg("PopulateCtrBackgroundTask cold start succeed")
 	}
 }

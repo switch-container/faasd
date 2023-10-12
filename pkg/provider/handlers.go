@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"syscall"
@@ -19,6 +18,7 @@ import (
 	"github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/metrics"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 )
 
 // This part is almost copied from faas-provider/proxy
@@ -136,7 +136,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	begin := time.Now()
 	instance, err := m.MakeCtrInstanceFor(ctx, lambdaName)
 	if err != nil {
-		log.Printf("MakeCtrInstanceFor %s failed: %s", lambdaName, err)
+		log.Error().Err(err).Str("lambda name", lambdaName).Msg("MakeCtrInstanceFor failed")
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to make ctr instance for %s: %s", lambdaName, err)
 		return
 	}
@@ -170,7 +170,8 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	retry_times, response, err := proxyRequest(ctx, originalReq, proxyClient, *lambdaAddr, lambdaName)
 	if err != nil {
 		// TODO(huang-jl) garbage collect this ctr instance
-		log.Printf("%s (%s) invoke with url %s failed: %s", instanceID, instance.depolyDecision, urlStr, err)
+		log.Error().Err(err).Str("instance", instanceID).Str("url", urlStr).
+			Str("depoly decision", instance.depolyDecision.String()).Msg("invoke failed")
 		instance.status = INVALID
 		httputil.Errorf(w, http.StatusInternalServerError, "[%s] invoke to %s failed: %s", instanceID, urlStr, err)
 		return
@@ -184,8 +185,9 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		defer response.Body.Close()
 	}
 
-	log.Printf("%s (%s) (%s) total took %s (retry %d times)\n",
-		instanceID, instance.depolyDecision, urlStr, time.Since(start), retry_times)
+	log.Debug().Str("instance", instanceID).Str("url", urlStr).Int("retry times", retry_times).
+		Str("depoly decision", instance.depolyDecision.String()).
+		Dur("total overhead", time.Since(start)).Msg("invoke succeed")
 
 	clientHeader := w.Header()
 	copyHeaders(clientHeader, &response.Header)
@@ -289,12 +291,12 @@ func MakeRegisterHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.R
 		defer r.Body.Close()
 
 		body, _ := io.ReadAll(r.Body)
-		log.Printf("[Register] request: %s\n", string(body))
+		log.Info().Str("body", string(body)).Msg("Register request")
 
 		req := types.FunctionDeployment{}
 		err := json.Unmarshal(body, &req)
 		if err != nil {
-			log.Printf("[Register] - error parsing input: %s\n", err)
+			log.Error().Err(err).Msg("Register parsing input failed")
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

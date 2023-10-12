@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/openfaas/faas-provider/logs"
 
 	faasd "github.com/openfaas/faasd/pkg"
+	"github.com/rs/zerolog/log"
 )
 
 type requester struct{}
@@ -58,10 +58,10 @@ func (r *requester) Query(ctx context.Context, req logs.Request) (<-chan logs.Me
 
 // buildCmd reeturns the equivalent of
 //
-// 	journalctl -t <namespace>:<name>  \
-// 		--output=json \
-// 		--since=<timestamp> \
-// 		<--follow> \
+//	journalctl -t <namespace>:<name>  \
+//		--output=json \
+//		--since=<timestamp> \
+//		<--follow> \
 func buildCmd(ctx context.Context, req logs.Request) *exec.Cmd {
 	// // set the cursor position based on req, default to 5m
 	since := time.Now().Add(-5 * time.Minute)
@@ -101,23 +101,23 @@ func buildCmd(ctx context.Context, req logs.Request) *exec.Cmd {
 // the loop is based on the Decoder example in the docs
 // https://golang.org/pkg/encoding/json/#Decoder.Decode
 func streamLogs(ctx context.Context, cmd *exec.Cmd, out io.ReadCloser, msgs chan logs.Message) {
-	log.Println("starting journal stream using ", cmd.String())
+	log.Info().Msgf("starting journal stream using %s", cmd.String())
 
 	// will ensure `out` is closed and all related resources cleaned up
 	go func() {
 		err := cmd.Wait()
-		log.Println("wait result", err)
+		log.Info().Msgf("wait result", err)
 	}()
 
 	defer func() {
-		log.Println("closing journal stream")
+		log.Info().Msg("closing journal stream")
 		close(msgs)
 	}()
 
 	dec := json.NewDecoder(out)
 	for dec.More() {
 		if ctx.Err() != nil {
-			log.Println("log stream context cancelled")
+			log.Info().Msg("log stream context cancelled")
 			return
 		}
 
@@ -126,13 +126,13 @@ func streamLogs(ctx context.Context, cmd *exec.Cmd, out io.ReadCloser, msgs chan
 		entry := map[string]string{}
 		err := dec.Decode(&entry)
 		if err != nil {
-			log.Printf("error decoding journalctl output: %s", err)
+			log.Error().Err(err).Msg("error decoding journalctl output")
 			return
 		}
 
 		msg, err := parseEntry(entry)
 		if err != nil {
-			log.Printf("error parsing journalctl output: %s", err)
+			log.Error().Err(err).Msg("error parsing journalctl output")
 			return
 		}
 
@@ -176,8 +176,8 @@ func parseEntry(entry map[string]string) (logs.Message, error) {
 }
 
 func logErrOut(out io.ReadCloser) {
-	defer log.Println("stderr closed")
+	defer log.Info().Msg("stderr closed")
 	defer out.Close()
 
-	io.Copy(log.Writer(), out)
+	io.Copy(log.Logger, out)
 }

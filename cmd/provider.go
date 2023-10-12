@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +24,7 @@ import (
 	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/provider/config"
 	"github.com/openfaas/faasd/pkg/provider/handlers"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -64,7 +64,7 @@ func makeProviderCmd() *cobra.Command {
 			return err
 		}
 
-		log.Printf("faasd-provider starting..\tService Timeout: %s\n", config.WriteTimeout.String())
+		log.Info().Str("Service Timeout", config.WriteTimeout.String()).Msg("faasd-provider starting...")
 		printVersion()
 
 		wd, err := os.Getwd()
@@ -107,7 +107,6 @@ func makeProviderCmd() *cobra.Command {
 			}
 			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{})
 		} else {
-			// TODO(huang-jl) initialize some containers (e.g. 100 or 200) for non-baseline cases
 			bgTask = []provider.BackgroundTask{
 				// only for baseline
 				provider.NewPopulateCtrBackgroundTask(pkg.PopulateCtrNum),
@@ -154,7 +153,7 @@ func makeProviderCmd() *cobra.Command {
 		wg.Add(1)
 		go func() {
 			<-sig
-			log.Println("Signal received.. shutting down server")
+			log.Info().Msg("Signal received.. shutting down server")
 			m.Shutdown()
 			wg.Done()
 		}()
@@ -190,7 +189,7 @@ func makeProviderCmd() *cobra.Command {
 			MetricFunction:   provider.MakeMetricReader(),
 		}
 
-		log.Printf("Listening on: 0.0.0.0:%d\n", *config.TCPPort)
+		log.Info().Int("port", *config.TCPPort).Msg("Listening on: 0.0.0.0")
 		bootstrap.Serve(&bootstrapHandlers, config)
 		wg.Wait()
 		return nil

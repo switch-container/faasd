@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"path"
 	"sort"
@@ -23,6 +22,7 @@ import (
 	"github.com/openfaas/faasd/pkg/cninetwork"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 
 	"github.com/containerd/containerd/namespaces"
 	units "github.com/docker/go-units"

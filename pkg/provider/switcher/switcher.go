@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,19 +12,17 @@ import (
 	"time"
 
 	criurpc "github.com/checkpoint-restore/go-criu/v5/rpc"
+	"github.com/containerd/containerd"
 	"github.com/openfaas/faasd/pkg"
 	"github.com/openfaas/faasd/pkg/metrics"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
-
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/defaults"
-	"github.com/containerd/containerd/pkg/dialer"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 )
+
+var swlogger = log.With().
+	Str("component", "[Switcher]").
+	Logger()
 
 type Process struct {
 	cmd *exec.Cmd
@@ -114,7 +111,8 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		for _, fd := range extraFiles {
 			fd.Close()
 		}
-		log.Printf("close for %s fd spent %s", switcher.checkpoint, time.Since(start))
+		swlogger.Debug().Dur("overhead", time.Since(start)).
+			Str("lambda name", switcher.checkpoint).Msg("close fd for criu switch")
 	}()
 
 	start := time.Now()
@@ -123,21 +121,27 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		return errors.Wrap(err, "handle switch namespace failed")
 	}
 	// metrics.GetMetricLogger().Emit(pkg.CRIUHandleNsMetric, switcher.checkpoint, time.Since(start))
-	log.Printf("handle switch namespace for %s spent %s", switcher.checkpoint, time.Since(start))
+	swlogger.Debug().Dur("overhead", time.Since(start)).
+		Str("lambda name", switcher.checkpoint).Msg("handle switch namespace")
 
 	start = time.Now()
 	// [10us]
 	if err = handlePseudoMMDrv(rpcOpts, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle pseudo mm drv failed")
 	}
-	log.Printf("handle pseudo mm drv %s, ", time.Since(start))
+	swlogger.Debug().Dur("overhead", time.Since(start)).
+		Str("lambda name", switcher.checkpoint).Msg("handle pseudo mm drv")
 
 	start = time.Now()
 	// [50us]
 	if err = applyCgroup(pid, rpcOpts, criuOpts); err != nil {
 		return errors.Wrap(err, "apply cgroup failed")
 	}
-	log.Printf("apply cgroup %s, ", time.Since(start))
+	if criuOpts.CgroupFile != nil {
+		defer criuOpts.CgroupFile.Close()
+	}
+	swlogger.Debug().Dur("overhead", time.Since(start)).
+		Str("lambda name", switcher.checkpoint).Msg("apply cgroup")
 
 	// TODO(huang-jl) kill process in another goroutine (async)
 	// kill process sometimes takes about 4ms - 5ms.
@@ -249,8 +253,9 @@ func applyCgroup(pid int, rpcOpts *criurpc.CriuOpts, criuOpts *CriuOpts) error {
 	if len(cgroupsPaths) != 1 {
 		return fmt.Errorf("Please make sure you are using cgroup v2")
 	}
-	log.Printf("cgroup paths: %+v\n", cgroupsPaths)
+	logEvent := swlogger.Debug()
 	for c, p := range cgroupsPaths {
+		logEvent = logEvent.Str("cgroup path ctrl", c).Str("cgroup path path", p)
 		cgroupRoot := &criurpc.CgroupRoot{
 			Ctrl: proto.String(c),
 			Path: proto.String(p),
@@ -264,11 +269,12 @@ func applyCgroup(pid int, rpcOpts *criurpc.CriuOpts, criuOpts *CriuOpts) error {
 			return err
 		}
 	}
+	logEvent.Send()
 
 	if cgroupFile == nil {
 		return fmt.Errorf("empty cgroup for pid %d", pid)
 	}
-	criuOpts.CgroupFD = cgroupFile.Fd()
+	criuOpts.CgroupFile = cgroupFile
 
 	// we use cgroup yard to accelerate the speed of prepare cgroup
 	rpcOpts.CgroupYard = proto.String("/sys/fs/cgroup")
@@ -279,69 +285,18 @@ func applyCgroup(pid int, rpcOpts *criurpc.CriuOpts, criuOpts *CriuOpts) error {
 	return nil
 }
 
-// TODO(huang-jl) use some of the parameters here (copied from moby)
-func initContainerdClient(addr string) (client *containerd.Client, err error) {
-	var (
-		possibleAddr []string
-	)
-	backoffConfig := backoff.DefaultConfig
-	backoffConfig.MaxDelay = 3 * time.Second
-	connParams := grpc.ConnectParams{
-		Backoff: backoffConfig,
-	}
-	gopts := []grpc.DialOption{
-		// WithBlock makes sure that the following containerd request
-		// is reliable.
-		//
-		// NOTE: In one edge case with high load pressure, kernel kills
-		// dockerd, containerd and containerd-shims caused by OOM.
-		// When both dockerd and containerd restart, but containerd
-		// will take time to recover all the existing containers. Before
-		// containerd serving, dockerd will failed with gRPC error.
-		// That bad thing is that restore action will still ignore the
-		// any non-NotFound errors and returns running state for
-		// already stopped container. It is unexpected behavior. And
-		// we need to restart dockerd to make sure that anything is OK.
-		//
-		// It is painful. Add WithBlock can prevent the edge case. And
-		// n common case, the containerd will be serving in shortly.
-		// It is not harm to add WithBlock for containerd connection.
-		grpc.WithBlock(),
-
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithConnectParams(connParams),
-		grpc.WithContextDialer(dialer.ContextDialer),
-
-		// TODO(stevvooe): We may need to allow configuration of this on the client.
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(defaults.DefaultMaxRecvMsgSize)),
-		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(defaults.DefaultMaxSendMsgSize)),
-	}
-	if addr == "" {
-		possibleAddr = []string{"/run/docker/containerd/containerd.sock", "/run/containerd/containerd.sock"}
-	} else {
-		possibleAddr = []string{addr}
-	}
-	for _, addr := range possibleAddr {
-		client, err = containerd.New(addr, containerd.WithDefaultNamespace("moby"), containerd.WithDialOpts(gopts), containerd.WithTimeout(60*time.Second))
-		if err == nil {
-			return client, nil
-		}
-	}
-	return nil, err
-}
-
 // (process id, take over from REMOTE or not, err)
 func getPidOfContainer(client *containerd.Client, containerID string) (int, containerd.Container, error) {
 	var ctr containerd.Container = nil
 	ctr, err := client.LoadContainer(context.TODO(), containerID)
 	if err != nil {
-		logrus.Errorf("load container failed %s", err)
+		swlogger.Error().Err(err).Msg("load container failed")
 		return -1, nil, err
 	}
 	// [500us]
 	pid, err := ctr.TakeOver(context.TODO(), -1)
 	if err != nil || pid <= 0 {
-		logrus.Errorf("start take over of container failed %s", err)
+		swlogger.Error().Err(err).Msg("start take over of container failed")
 		return -1, nil, err
 	}
 	return pid, ctr, nil

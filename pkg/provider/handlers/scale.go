@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/namespaces"
 	gocni "github.com/containerd/go-cni"
+	"github.com/rs/zerolog/log"
 
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"

@@ -3,12 +3,12 @@ package pkg
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/rs/zerolog/log"
 	"time"
 )
 

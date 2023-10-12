@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -25,6 +24,7 @@ import (
 	"github.com/openfaas/faasd/pkg/provider"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -176,8 +176,6 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 		}
 		quota = int64(cpuLimits * 100000.0)
 	}
-
-	log.Println(mounts)
 
 	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := client.NewContainer(
