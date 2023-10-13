@@ -42,6 +42,7 @@ const (
 	ColdStartLatencyMetric = "cold-start-latency"
 	ColdStartCountMetric   = "cold-start-count"
 	ReuseCountMetric       = "reuse-count"
+	ReuseLatencyMetric     = "reuse-latency"
 	InvokeCountMetric      = "invoke-count"
 	PrepareSwitchFSLatency = "prepare-switch-fs-latency"
 	CRIUSwrkLatencyMetric  = "criu-swrk-latency"

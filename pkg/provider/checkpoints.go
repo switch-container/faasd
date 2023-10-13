@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/openfaas/faasd/pkg"
+	"github.com/rs/zerolog/log"
 )
 
+// This is a read-only cache and will be
+// initialized when created.
 type CheckpointCache struct {
-	data map[string]bool
-	rw   sync.RWMutex
-
+	data          map[string]bool
 	checkpointDir string
 }
 
@@ -23,47 +23,35 @@ func NewCheckpointCache() *CheckpointCache {
 		data:          make(map[string]bool),
 		checkpointDir: pkg.FaasdCheckpointDirPrefix,
 	}
-	cache.FillCache()
+	cache.fillCache()
 	return cache
 }
 
-func (c *CheckpointCache) Lookup(serviceName string) bool {
-	c.rw.RLock()
-	defer c.rw.RUnlock()
-	valid, ok := c.data[serviceName]
-	return valid && ok
-}
-
-func (c *CheckpointCache) FillCache() error {
-	// Check if namespace exists, and it has the openfaas label
+func (c *CheckpointCache) fillCache() error {
 	items, err := os.ReadDir(c.checkpointDir)
 	if err != nil {
-		// we do not have any checkpoints for now
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	c.rw.Lock()
-	defer c.rw.Unlock()
 
-	// first invalidate all checkpoint
-	for k := range c.data {
-		c.data[k] = false
-	}
-	// update from dir
 	for _, item := range items {
 		if item.Type().IsDir() {
 			c.data[item.Name()] = true
+			log.Debug().Str("name", item.Name()).Msg("find checkpoint image directory")
 		}
 	}
 	return nil
 }
 
+func (c *CheckpointCache) Lookup(serviceName string) bool {
+	valid, ok := c.data[serviceName]
+	return valid && ok
+}
+
 func (c *CheckpointCache) List() []string {
 	var res []string
-	c.rw.RLock()
-	defer c.rw.RUnlock()
 
 	for k, valid := range c.data {
 		if valid {

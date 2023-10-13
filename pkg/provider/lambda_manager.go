@@ -60,9 +60,10 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 	}
 	checkpointCache := NewCheckpointCache()
 	m := &LambdaManager{
-		pools:     map[string]*CtrPool{},
-		policy:    policy,
-		Runtime:   NewCtrRuntime(client, cni, rootfsManager, checkpointCache, false, pkg.ColdStartConcurrencyLimit),
+		pools:  map[string]*CtrPool{},
+		policy: policy,
+		Runtime: NewCtrRuntime(client, cni, rootfsManager, checkpointCache,
+			false, pkg.ColdStartConcurrencyLimit),
 		terminate: false,
 	}
 	return m, nil

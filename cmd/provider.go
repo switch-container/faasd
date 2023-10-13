@@ -135,6 +135,7 @@ func makeProviderCmd() *cobra.Command {
 			{pkg.ColdStartLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.ColdStartCountMetric, metrics.FIND_GRAINED_COUNTER},
 			{pkg.ReuseCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.ReuseLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.InvokeCountMetric, metrics.SINGLE_COUNTER},
 
 			{pkg.PrepareSwitchFSLatency, metrics.LATENCY_METRIC},

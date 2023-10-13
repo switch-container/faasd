@@ -34,8 +34,6 @@ const (
 	defaultContentType = "text/plain"
 )
 
-// TODO(huang-jl) we need reuse latency metric, since in current implementation, cold start
-// may failed due to concurrency limitation, so even reuse may consume some time (e.g., waiting to retry)
 func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 	lambdaName := instance.LambdaName
 	switch instance.depolyDecision {
@@ -47,6 +45,13 @@ func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 			return err
 		}
 	case REUSE:
+		// NOTE by huang-jl we need reuse latency metric, since in current implementation, cold start
+		// may failed due to concurrency limitation, so even reuse may consume some time (e.g., waiting to retry)
+		if dur > time.Millisecond {
+			if err := metrics.GetMetricLogger().Emit(pkg.ReuseLatencyMetric, lambdaName, dur); err != nil {
+				return err
+			}
+		}
 		if err := metrics.GetMetricLogger().Emit(pkg.ReuseCountMetric, lambdaName, 1); err != nil {
 			return err
 		}
