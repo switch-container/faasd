@@ -86,12 +86,25 @@ func (r CtrRuntime) reap(reapCh <-chan int) {
 	for {
 		select {
 		case <-sigc:
+			// This is a trick for delete element while loop
+			count := 0
 			for _, pid := range pidsToWait {
-				// we ignore error and status ...
-				// just do simple reap here
-				syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
+				wpid, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
+				if err == nil && wpid == pid {
+					// wait succeed
+					continue
+				} else {
+					// pid has not terminate
+					// we need wait4 it next time
+					pidsToWait[count] = pid
+					count++
+				}
 			}
-		case pid := <-reapCh:
+			pidsToWait = pidsToWait[:count]
+		case pid, hasMore := <-reapCh:
+			if !hasMore {
+				return
+			}
 			if pid > 0 {
 				pidsToWait = append(pidsToWait, pid)
 			}
@@ -191,6 +204,16 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
 	}
 
+	// var memory *specs.LinuxMemory
+	// {
+	// 	qty, err := resource.ParseQuantity("1G")
+	// 	if err != nil {
+	// 		crlogger.Error().Err(err).Msg("parsing 1G as quantity failed")
+	// 		return nil, err
+	// 	}
+	// 	v := qty.Value()
+	// 	memory = &specs.LinuxMemory{Limit: &v}
+	// }
 	// memory limits
 	var memory *specs.LinuxMemory
 	if req.Limits != nil && len(req.Limits.Memory) > 0 {

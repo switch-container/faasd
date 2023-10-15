@@ -24,15 +24,40 @@ type BackgroundTask interface {
 type InstanceGCBackgroundTask struct {
 	interval    time.Duration
 	gcCriterion time.Duration
+	// how many goroutines will do gc work
+	concurrency int
 }
 
-func NewInstanceGCBackgroundTask(interval, criterion time.Duration) InstanceGCBackgroundTask {
-	return InstanceGCBackgroundTask{interval: interval, gcCriterion: criterion}
+func NewInstanceGCBackgroundTask(interval, criterion time.Duration, concurrency int) InstanceGCBackgroundTask {
+	return InstanceGCBackgroundTask{
+		interval:    interval,
+		gcCriterion: criterion,
+		concurrency: concurrency,
+	}
+}
+
+func (t InstanceGCBackgroundTask) gcWork(m *LambdaManager, ch <-chan *CtrInstance) {
+	for instance := range ch {
+		instanceID := GetInstanceID(instance.LambdaName, instance.ID)
+		if err := m.Runtime.KillInstance(instance); err != nil {
+			bglogger.Error().Err(err).Str("instance", instanceID).Msg("garbage collect instance failed")
+		} else {
+			bglogger.Debug().Str("instance", instanceID).Msg("garbage collect instance finish")
+		}
+	}
 }
 
 func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
+	instanceCh := make(chan *CtrInstance, 128)
+	m.registerCleanup(func(lm *LambdaManager) {
+		close(instanceCh)
+	})
+	for i := 0; i < t.concurrency; i++ {
+		go t.gcWork(m, instanceCh)
+	}
+
+	var toBeGC []*CtrInstance
 	for {
-		var toBeGC []*CtrInstance
 		time.Sleep(t.interval)
 		m.mu.RLock()
 		if m.terminate {
@@ -58,13 +83,20 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 		}
 		m.mu.RUnlock()
 
-		// start to gc
-		for _, instance := range toBeGC {
-			instanceID := GetInstanceID(instance.LambdaName, instance.ID)
-			if err := m.Runtime.KillInstance(instance); err != nil {
-				bglogger.Error().Err(err).Str("instance", instanceID).Msg("garbage collect instance failed")
-			} else {
-				bglogger.Debug().Str("instance", instanceID).Msg("garbage collect instance")
+		for len(toBeGC) > 0 {
+			instance := toBeGC[0]
+			select {
+			case instanceCh <- instance:
+				// if send to channel, then we pop it from toBeGC
+				toBeGC = toBeGC[1:]
+				bglogger.Debug().Str("lambda name", instance.LambdaName).
+					Uint64("id", instance.ID).Msg("decide to gc instance")
+			default:
+				// if channel if full, we buffer it until next round to retry
+				// the main idea here is that we should not block this goroutine
+				// so that at least the containers can be kick out as soon as possible
+				bglogger.Debug().Int("buf size", len(toBeGC)).Msg("ctr garbage collection channel is full")
+				break
 			}
 		}
 	}

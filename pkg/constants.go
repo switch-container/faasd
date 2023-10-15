@@ -55,4 +55,5 @@ const (
 
 	PopulateCtrNum            = 60
 	ColdStartConcurrencyLimit = 10
+	CtrGCConcurrencyLimit     = 5
 )

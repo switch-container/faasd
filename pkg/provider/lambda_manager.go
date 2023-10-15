@@ -21,12 +21,14 @@ var lmlogger = log.With().
 // Note by huang-jl: In our workload,
 // after adding a lambda, it will not be deleted
 type LambdaManager struct {
-	pools     map[string]*CtrPool
-	lambdas   []string
-	mu        sync.RWMutex
-	policy    DeployPolicy
-	Runtime   CtrRuntime
-	terminate bool
+	pools       map[string]*CtrPool
+	lambdas     []string
+	mu          sync.RWMutex
+	policy      DeployPolicy
+	Runtime     CtrRuntime
+	memoryBound int
+	terminate   bool
+	cleanup     []func(*LambdaManager)
 }
 
 type ContainerStatus string
@@ -65,7 +67,12 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 		Runtime: NewCtrRuntime(client, cni, rootfsManager, checkpointCache,
 			false, pkg.ColdStartConcurrencyLimit),
 		terminate: false,
+		cleanup:   []func(*LambdaManager){killAllInstances},
 	}
+	m.registerCleanup(func(lm *LambdaManager) {
+		close(lm.Runtime.reapCh)
+		close(lm.Runtime.workerCh)
+	})
 	return m, nil
 }
 
@@ -169,12 +176,13 @@ func (m *LambdaManager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.terminate = true
-	m.killAllInstances()
-	close(m.Runtime.workerCh)
+	for _, f := range m.cleanup {
+		f(m)
+	}
 }
 
 // clean **ALL** running instances if possible
-func (m *LambdaManager) killAllInstances() {
+func killAllInstances(m *LambdaManager) {
 	lmlogger.Info().Msg("Start shutdown all instances of LambdaManager...")
 
 	for _, pool := range m.pools {
@@ -190,4 +198,10 @@ func (m *LambdaManager) killAllInstances() {
 			}
 		}
 	}
+}
+
+func (m *LambdaManager) registerCleanup(cleanupFn func(*LambdaManager)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanup = append(m.cleanup, cleanupFn)
 }

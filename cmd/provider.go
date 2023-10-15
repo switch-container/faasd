@@ -103,7 +103,8 @@ func makeProviderCmd() *cobra.Command {
 		if isBaseline {
 			bgTask = []provider.BackgroundTask{
 				// only for baseline
-				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval, pkg.BaselineGCCriterion),
+				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval,
+					pkg.BaselineGCCriterion, pkg.CtrGCConcurrencyLimit),
 			}
 			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{})
 		} else {
