@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"strconv"
 	"time"
 
 	"github.com/containerd/containerd"
@@ -152,30 +151,30 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 		return fmt.Errorf("unable to apply labels to container: %s, error: %w", serviceName, err)
 	}
 
+	// See ctr_pool.go for why I choose a fixed 1G for all containers
 	var memory *specs.LinuxMemory
-	if req.Limits != nil && len(req.Limits.Memory) > 0 {
-		memory = &specs.LinuxMemory{}
-
-		qty, err := resource.ParseQuantity(req.Limits.Memory)
+	{
+		qty, err := resource.ParseQuantity("1G")
 		if err != nil {
-			log.Printf("error parsing (%q) as quantity: %s", req.Limits.Memory, err.Error())
+			log.Error().Err(err).Msg("parsing 1G as quantity failed")
+			return err
 		}
 		v := qty.Value()
-		memory.Limit = &v
+		memory = &specs.LinuxMemory{Limit: &v}
 	}
 
 	// cpu limits
 	var (
-		period = uint64(100000)
-		quota  int64
+		period uint64 = uint64(100000)
+		quota  int64  = 0
 	)
-	if req.Limits != nil && len(req.Limits.CPU) > 0 {
-		cpuLimits, err := strconv.ParseFloat(req.Limits.CPU, 32)
-		if err != nil {
-			return errors.Wrap(err, "parse cpu limit in FunctionDeployment failed")
-		}
-		quota = int64(cpuLimits * 100000.0)
-	}
+	// if req.Limits != nil && len(req.Limits.CPU) > 0 {
+	// 	cpuLimits, err := strconv.ParseFloat(req.Limits.CPU, 32)
+	// 	if err != nil {
+	// 		return errors.Wrap(err, "parse cpu limit in FunctionDeployment failed")
+	// 	}
+	// 	quota = int64(cpuLimits * 100000.0)
+	// }
 
 	// By huang-jl: probably to use oci.WithRootFSPath() to use costomized rootfs
 	container, err := client.NewContainer(

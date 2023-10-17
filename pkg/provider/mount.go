@@ -16,8 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var ErrPkgDirNotFind = errors.New("could not find app package directory")
-var ErrAppOverlayNotFind = errors.New("could not find idle app overlay")
 var rmlogger = log.With().
 	Str("component", "[RootfsManager]").
 	Logger()
@@ -146,6 +144,7 @@ func (m *RootfsManager) putAppOverlayToCache(serviceName string, info *OverlayIn
 	// log.Printf("clean old container's writable layer spent %s\n", time.Since(start))
 }
 
+// Returned *OverlayInfo is nil which means there is no entry in cache
 func (m *RootfsManager) getAppOverlayFromCache(serviceName string) (*OverlayInfo, error) {
 	var res *OverlayInfo
 	m.mu.Lock()
@@ -155,7 +154,7 @@ func (m *RootfsManager) getAppOverlayFromCache(serviceName string) (*OverlayInfo
 		return res, fmt.Errorf("%s not exists in app overlay cache", serviceName)
 	}
 	if len(appOverlays.data) == 0 {
-		return res, ErrAppOverlayNotFind
+		return res, nil
 	}
 	// pop the element in the front
 	res = appOverlays.data[0]
@@ -281,14 +280,13 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInst
 	start = time.Now()
 	appOverlay, err := m.getAppOverlayFromCache(serviceName)
 	if err != nil {
-		if errors.Is(err, ErrAppOverlayNotFind) {
-			rmlogger.Debug().Str("lambda name", serviceName).Msg("prepare switch rootfs sync!")
-			appOverlay, err = m.PrepareAppOverlay(serviceName, true)
-			if err != nil {
-				return nil, errors.Wrapf(err, "prepare app overlay for %s failed", serviceName)
-			}
-		} else {
-			return nil, errors.Wrapf(err, "get app overlay from cache for %s failed", serviceName)
+		return nil, errors.Wrapf(err, "get app overlay from cache for %s failed", serviceName)
+	}
+	if appOverlay == nil {
+		rmlogger.Debug().Str("lambda name", serviceName).Msg("prepare switch rootfs sync!")
+		appOverlay, err = m.PrepareAppOverlay(serviceName, true)
+		if err != nil {
+			return nil, errors.Wrapf(err, "prepare app overlay for %s failed", serviceName)
 		}
 	}
 	// best effort cache fill policy: non-blocking sending fill request without retry

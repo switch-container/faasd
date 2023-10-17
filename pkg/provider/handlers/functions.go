@@ -49,7 +49,7 @@ func ListFunctions(m *provider.LambdaManager, namespace string) (map[string]*Fun
 	functions := make(map[string]*Function)
 
 	for _, c := range containers {
-		name := provider.GetInstanceID(c.LambdaName, c.ID)
+		name := c.GetInstanceID()
 		f := Function{
 			name:      name,
 			namespace: faasd.DefaultFunctionNamespace,

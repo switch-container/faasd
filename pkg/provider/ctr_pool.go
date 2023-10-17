@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/openfaas/faas-provider/types"
+	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // This is a pool for each kind of Lambda function
@@ -19,15 +21,28 @@ type CtrPool struct {
 	lambdaName  string
 
 	requirement types.FunctionDeployment
+	// How many bytes does this type of function needed
+	memoryRequirement int64
 }
 
-func NewCtrPool(lambdaName string, req types.FunctionDeployment) *CtrPool {
-	return &CtrPool{
-		lambdaName:  lambdaName,
-		requirement: req,
-		free:        []*CtrInstance{},
-		busy:        make(map[uint64]*CtrInstance),
+func NewCtrPool(lambdaName string, req types.FunctionDeployment) (*CtrPool, error) {
+	var memoryLimit string = "1G"
+	if req.Limits != nil && len(req.Limits.Memory) > 0 {
+		memoryLimit = req.Limits.Memory
 	}
+
+	qty, err := resource.ParseQuantity(memoryLimit)
+	if err != nil {
+		return nil, errors.Wrapf(err, "parse memory limit %s failed", memoryLimit)
+	}
+
+	return &CtrPool{
+		lambdaName:        lambdaName,
+		requirement:       req,
+		free:              []*CtrInstance{},
+		busy:              make(map[uint64]*CtrInstance),
+		memoryRequirement: qty.Value(),
+	}, nil
 }
 
 // return nil when do not find instance in free queue
@@ -40,6 +55,12 @@ func (pool *CtrPool) PopFromFree() *CtrInstance {
 		pool.free = pool.free[1:]
 	}
 	return res
+}
+
+func (pool *CtrPool) PushIntoFree(instance *CtrInstance) {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	pool.free = append(pool.free, instance)
 }
 
 func (pool *CtrPool) PushIntoBusy(instance *CtrInstance) {
@@ -83,7 +104,10 @@ type CtrInstance struct {
 	// the originalCtrID is used for cleanup
 }
 
+func (i *CtrInstance) GetInstanceID() string {
+	return fmt.Sprintf("%s-%d", i.LambdaName, i.ID)
+}
+
 func GetInstanceID(lambdaName string, id uint64) string {
 	return fmt.Sprintf("%s-%d", lambdaName, id)
 }
-

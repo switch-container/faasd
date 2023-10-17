@@ -138,6 +138,8 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		return
 	}
 
+	log.Debug().Str("lambda name", lambdaName).Msg("invoke handler recv new request!")
+
 	begin := time.Now()
 	instance, err := m.MakeCtrInstanceFor(ctx, lambdaName)
 	if err != nil {
@@ -150,7 +152,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		return
 	}
 
-	instanceID := GetInstanceID(instance.LambdaName, instance.ID)
+	instanceID := instance.GetInstanceID()
 	// move instance to busy pool
 	pool, err := m.GetCtrPool(lambdaName)
 	if err != nil {
@@ -306,7 +308,11 @@ func MakeRegisterHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		m.RegisterLambda(req)
+		if err := m.RegisterLambda(req); err != nil {
+			log.Error().Err(err).Msg("Register failed")
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}
 }

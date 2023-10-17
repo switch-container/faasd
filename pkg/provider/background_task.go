@@ -38,8 +38,8 @@ func NewInstanceGCBackgroundTask(interval, criterion time.Duration, concurrency 
 
 func (t InstanceGCBackgroundTask) gcWork(m *LambdaManager, ch <-chan *CtrInstance) {
 	for instance := range ch {
-		instanceID := GetInstanceID(instance.LambdaName, instance.ID)
-		if err := m.Runtime.KillInstance(instance); err != nil {
+		instanceID := instance.GetInstanceID()
+		if err := m.KillInstance(instance); err != nil {
 			bglogger.Error().Err(err).Str("instance", instanceID).Msg("garbage collect instance failed")
 		} else {
 			bglogger.Debug().Str("instance", instanceID).Msg("garbage collect instance finish")
@@ -75,6 +75,7 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 				if time.Since(instance.lastActive) > t.gcCriterion {
 					pool.free = pool.free[1:]
 					toBeGC = append(toBeGC, instance)
+					m.memBound.RemoveCtr(pool.memoryRequirement)
 				} else {
 					break
 				}
@@ -89,8 +90,8 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 			case instanceCh <- instance:
 				// if send to channel, then we pop it from toBeGC
 				toBeGC = toBeGC[1:]
-				bglogger.Debug().Str("lambda name", instance.LambdaName).
-					Uint64("id", instance.ID).Msg("decide to gc instance")
+				bglogger.Debug().Str("instance id", instance.GetInstanceID()).
+					Msg("decide to gc instance")
 			default:
 				// if channel if full, we buffer it until next round to retry
 				// the main idea here is that we should not block this goroutine
@@ -116,7 +117,7 @@ var helloWorldSpec = types.FunctionDeployment{
 		"port": "9001",
 	},
 	Limits: &types.FunctionResources{
-		Memory: "1G",
+		Memory: "256M",
 		CPU:    "1",
 	},
 }
@@ -129,13 +130,17 @@ func NewPopulateCtrBackgroundTask(num int) PopulateCtrBackgroundTask {
 }
 
 func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
-	m.RegisterLambda(t.baseCtrSpec)
+	if err := m.RegisterLambda(t.baseCtrSpec); err != nil {
+		bglogger.Error().Err(err).Msg("register base ctr faild!")
+		return
+	}
 
 	lambdaName := t.baseCtrSpec.Service
 	pool, err := m.GetCtrPool(lambdaName)
 	if err != nil {
 		bglogger.Error().Err(err).Str("lambda name", lambdaName).
 			Msg("PopulateCtrBackgroundTask get ctr pool failed")
+
 	}
 
 	bglogger.Debug().Int("num", t.num).Msg("start populate dummy containers...")
@@ -144,18 +149,22 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 	retry:
 		// but actually the background task should not retry or crash
 		// since there should be no load or request while populating
-		instance, err := m.Runtime.ColdStart(t.baseCtrSpec, id)
-		if errors.Is(err, ColdStartTooMuchError) {
+		m.memBound.AddCtr(pool.memoryRequirement)
+		instance, err := m.ColdStart(DeployResult{
+			decision:   COLD_START,
+			targetPool: pool,
+		}, id)
+		if errors.Is(err, ErrColdStartTooMuch) {
 			goto retry
 		} else if err != nil {
-			bglogger.Error().Err(err).Str("lambda name", lambdaName).Uint64("id", id).
+			bglogger.Error().Err(err).Str("instance id", instance.GetInstanceID()).
 				Msg("PopulateCtrBackgroundTask cold start failed")
 			break
 		}
 		pool.mu.Lock()
 		pool.free = append(pool.free, instance)
 		pool.mu.Unlock()
-		bglogger.Error().Err(err).Str("lambda name", lambdaName).Uint64("id", instance.ID).
+		bglogger.Error().Err(err).Str("instance id", instance.GetInstanceID()).
 			Msg("PopulateCtrBackgroundTask cold start succeed")
 	}
 }

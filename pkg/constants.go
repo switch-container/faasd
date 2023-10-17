@@ -31,6 +31,7 @@ const (
 	// have to use our new kernel
 	PseudoMMDrvPath          = "/dev/pseudo_mm"
 	CRIUPseudoMMDrvInheritID = "pseudo-mm-drv"
+	DaxDevicePath            = "/dev/dax0.0"
 
 	// The initial app overlay cache size for each service
 	AppOverlayCacheInitNum = 1
@@ -53,7 +54,11 @@ const (
 	BaselineGCInterval  = 5 * time.Second
 	BaselineGCCriterion = 1 * time.Minute
 
-	PopulateCtrNum            = 60
-	ColdStartConcurrencyLimit = 10
-	CtrGCConcurrencyLimit     = 5
+	PopulateCtrNum = 60
+
+	ColdStartConcurrencyLimit     = 10
+	CtrGCConcurrencyLimit         = 5
+	KillInstancesConcurrencyLimit = 4
+
+	MemoryBound int64 = 20 * 1024 * 1024 * 1024
 )

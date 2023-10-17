@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -31,7 +30,6 @@ import (
 
 const annotationLabelPrefix = "com.openfaas.annotations."
 
-var ColdStartTooMuchError = fmt.Errorf("cold start rate reach limitation")
 var crlogger = log.With().
 	Str("component", "[CtrRuntime]").
 	Logger()
@@ -133,7 +131,7 @@ func (r CtrRuntime) ColdStart(req types.FunctionDeployment, id uint64) (*CtrInst
 	default:
 		// when workerCh is full, we have to wait/retry to prevent
 		// starting too much containers concurrently
-		return nil, ColdStartTooMuchError
+		return nil, ErrColdStartTooMuch
 	}
 }
 
@@ -184,7 +182,7 @@ func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeploym
 }
 
 func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
-	crlogger.Debug().Str("instance", instanceID).Msg("cold start instance")
+	crlogger.Debug().Str("instance", instanceID).Msg("start cold start instance")
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
 		snapshotter = val
@@ -204,42 +202,35 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
 	}
 
-	// var memory *specs.LinuxMemory
-	// {
-	// 	qty, err := resource.ParseQuantity("1G")
-	// 	if err != nil {
-	// 		crlogger.Error().Err(err).Msg("parsing 1G as quantity failed")
-	// 		return nil, err
-	// 	}
-	// 	v := qty.Value()
-	// 	memory = &specs.LinuxMemory{Limit: &v}
-	// }
-	// memory limits
+	// NOTE by huang-jl: This is a workaround for one bug:
+	// If we follow the memory limit in config here (e.g., 128MiB for pyaes)
+	// Then when doing switch (espeically from higher memory limit lambda to lower one)
+	// it is possible to OOM.
+	//
+	// So we just use a loose memory bound for all containers for now.
 	var memory *specs.LinuxMemory
-	if req.Limits != nil && len(req.Limits.Memory) > 0 {
-		memory = &specs.LinuxMemory{}
-
-		qty, err := resource.ParseQuantity(req.Limits.Memory)
+	{
+		qty, err := resource.ParseQuantity("1G")
 		if err != nil {
-			crlogger.Error().Err(err).Str("memory", req.Limits.Memory).Msg("parsing as quantity failed")
+			crlogger.Error().Err(err).Msg("parsing 1G as quantity failed")
 			return nil, err
 		}
 		v := qty.Value()
-		memory.Limit = &v
+		memory = &specs.LinuxMemory{Limit: &v}
 	}
 
 	// cpu limits
 	var (
-		period = uint64(100000)
-		quota  int64
+		period uint64 = uint64(100000)
+		quota  int64  = 0
 	)
-	if req.Limits != nil && len(req.Limits.CPU) > 0 {
-		cpuLimits, err := strconv.ParseFloat(req.Limits.CPU, 32)
-		if err != nil {
-			return nil, errors.Wrap(err, "parse cpu limit in FunctionDeployment failed")
-		}
-		quota = int64(cpuLimits * 100000.0)
-	}
+	// if req.Limits != nil && len(req.Limits.CPU) > 0 {
+	// 	cpuLimits, err := strconv.ParseFloat(req.Limits.CPU, 32)
+	// 	if err != nil {
+	// 		return nil, errors.Wrap(err, "parse cpu limit in FunctionDeployment failed")
+	// 	}
+	// 	quota = int64(cpuLimits * 100000.0)
+	// }
 
 	// wrapper := func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
 	// 	start := time.Now()
@@ -352,7 +343,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 0,
+		CRIULogLevel: 4,
 	}
 	start = time.Now()
 	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
