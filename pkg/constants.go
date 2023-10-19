@@ -52,7 +52,7 @@ const (
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
 
 	BaselineGCInterval  = 5 * time.Second
-	BaselineGCCriterion = 1 * time.Minute
+	BaselineGCCriterion = 2 * time.Minute
 
 	PopulateCtrNum = 60
 
@@ -60,5 +60,5 @@ const (
 	CtrGCConcurrencyLimit         = 5
 	KillInstancesConcurrencyLimit = 4
 
-	MemoryBound int64 = 20 * 1024 * 1024 * 1024
+	MemoryBound int64 = 32 * 1024 * 1024 * 1024
 )

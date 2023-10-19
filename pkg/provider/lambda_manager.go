@@ -285,8 +285,8 @@ restart:
 		if id == 0 {
 			id = depolyRes.targetPool.idAllocator.Add(1)
 		}
-		lmlogger.Debug().Str("new lambda", lambdaName).Uint64("new id", depolyRes.instance.ID).
-			Str("old lambda", depolyRes.targetPool.lambdaName).
+		lmlogger.Debug().Str("new lambda", lambdaName).Uint64("new id", id).
+			Str("old lambda", depolyRes.instance.LambdaName).
 			Uint64("old id", depolyRes.instance.ID).Msg("policy decide to switch ctr")
 		return m.SwitchStart(depolyRes, id)
 	}

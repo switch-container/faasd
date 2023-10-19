@@ -343,7 +343,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 4,
+		CRIULogLevel: 0,
 	}
 	start = time.Now()
 	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
