@@ -57,32 +57,30 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 	}
 
 	var toBeGC []*CtrInstance
-	for {
+	for !m.terminate {
 		time.Sleep(t.interval)
-		m.mu.RLock()
-		if m.terminate {
-			m.mu.RUnlock()
-			return
-		}
-		for _, pool := range m.pools {
-			pool.mu.Lock()
-			// since `free` is a queue, which means the first instance
-			// at `free` array is supposed to be the least used one.
-			// so we only need to check the first instance in `free` array
-			// to do garbage collection
-			for len(pool.free) > 0 {
-				instance := pool.free[0]
-				if time.Since(instance.lastActive) > t.gcCriterion {
-					pool.free = pool.free[1:]
-					toBeGC = append(toBeGC, instance)
-					m.memBound.RemoveCtr(pool.memoryRequirement)
-				} else {
-					break
-				}
+		for {
+			instance := m.PopFromGlobalLRU()
+			if instance == nil {
+				break
 			}
-			pool.mu.Unlock()
+			if time.Since(instance.lastActive) <= t.gcCriterion {
+				// we has collect all expired instances already
+				// put this one back and break
+				m.PushIntoGlobalLRU(instance)
+				break
+			}
+			// we go here means need to delete the instance from pool
+			// and add it to gc list
+			if instance.localPQIndex != 0 {
+				dplogger.Warn().Str("instance id", instance.GetInstanceID()).
+					Int("local PQ Index", instance.localPQIndex).Msg("find weird instance when gc")
+			}
+			pool, _ := m.GetCtrPool(instance.LambdaName)
+			pool.RemoveFromFree(instance)
+			toBeGC = append(toBeGC, instance)
+			m.memBound.RemoveCtr(pool.memoryRequirement)
 		}
-		m.mu.RUnlock()
 
 		for len(toBeGC) > 0 {
 			instance := toBeGC[0]
@@ -149,7 +147,6 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 	retry:
 		// but actually the background task should not retry or crash
 		// since there should be no load or request while populating
-		m.memBound.AddCtr(pool.memoryRequirement)
 		instance, err := m.ColdStart(DeployResult{
 			decision:   COLD_START,
 			targetPool: pool,
@@ -161,10 +158,10 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 				Msg("PopulateCtrBackgroundTask cold start failed")
 			break
 		}
-		pool.mu.Lock()
-		pool.free = append(pool.free, instance)
-		pool.mu.Unlock()
-		bglogger.Error().Err(err).Str("instance id", instance.GetInstanceID()).
+		m.memBound.AddCtr(pool.memoryRequirement)
+		pool.PushIntoFree(instance)
+		m.PushIntoGlobalLRU(instance)
+		bglogger.Debug().Err(err).Str("instance id", instance.GetInstanceID()).
 			Msg("PopulateCtrBackgroundTask cold start succeed")
 	}
 }

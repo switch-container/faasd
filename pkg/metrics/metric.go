@@ -27,7 +27,11 @@ func NewMetricLogger() *MetricLogger {
 }
 
 type Metric interface {
+	// add a new entry into metric
 	Emit(lambdaName string, val any) error
+	// cleanup all entries in metric
+	Cleanup()
+	// show metric entries in string format
 	String() string
 }
 
@@ -79,6 +83,14 @@ func (m *MetricLogger) Emit(metricName string, lambdaName string, val any) error
 	return metric.Emit(lambdaName, val)
 }
 
+func (m *MetricLogger) Cleanup() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, metric := range m.metrics {
+		metric.Cleanup()
+	}
+}
+
 type LatencyMetric struct {
 	data  map[string][]time.Duration
 	mu    sync.Mutex
@@ -94,6 +106,12 @@ func (lm *LatencyMetric) Emit(lambdaName string, val any) error {
 	}
 	lm.data[lambdaName] = append(lm.data[lambdaName], dur)
 	return nil
+}
+
+func (lm *LatencyMetric) Cleanup() {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.data = make(map[string][]time.Duration)
 }
 
 func (lm *LatencyMetric) String() string {
@@ -121,6 +139,12 @@ func (cm *FineGrainedCounterMetric) Emit(lambdaName string, val any) error {
 	}
 	cm.data[lambdaName] += delta
 	return nil
+}
+
+func (cm *FineGrainedCounterMetric) Cleanup() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.data = make(map[string]int)
 }
 
 func (cm *FineGrainedCounterMetric) String() string {
@@ -155,6 +179,10 @@ func (cm *CounterMetric) Emit(lambdaName string, val any) error {
 		return fmt.Errorf("wrong val type for CounterMetric: %+v", val)
 	}
 	return nil
+}
+
+func (cm *CounterMetric) Cleanup() {
+	cm.data.Store(0)
 }
 
 func (cm *CounterMetric) String() string {

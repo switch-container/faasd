@@ -314,6 +314,8 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 		depolyDecision: COLD_START,
 		originalCtrID:  name,
 		lastActive:     time.Now(),
+		localPQIndex:   -1,
+		globalPQIndex:  -1,
 	}, nil
 }
 
@@ -343,7 +345,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 0,
+		CRIULogLevel: 4,
 	}
 	start = time.Now()
 	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
@@ -369,6 +371,8 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	newInstance.Pid = newPid
 	newInstance.appOverlay = appOverlay
 	newInstance.depolyDecision = SWITCH
+	newInstance.localPQIndex = -1
+	newInstance.globalPQIndex = -1
 	// ipaddress, cniID, rootfs, originalCtrID will not change
 	return newInstance, nil
 }

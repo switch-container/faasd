@@ -117,7 +117,7 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 		r.HandleFunc("/invoke/{name:["+NameExpression+"]+}/{params:.*}", handlers.InvokeFunction)
 	}
 	if handlers.MetricFunction != nil {
-		r.HandleFunc("/system/metrics", handlers.MetricFunction).Methods(http.MethodGet)
+		r.HandleFunc("/system/metrics", handlers.MetricFunction).Methods(http.MethodGet, http.MethodDelete)
 	}
 	if handlers.ListCheckpoint != nil {
 		r.HandleFunc("/system/checkpoints", handlers.ListCheckpoint).Methods(http.MethodGet)

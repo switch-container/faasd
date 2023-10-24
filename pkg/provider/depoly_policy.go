@@ -2,8 +2,6 @@ package provider
 
 import (
 	"fmt"
-	"math/rand"
-	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -59,8 +57,18 @@ func (d DeployResult) applyMemUsage(m *LambdaManager) {
 	}
 }
 
+func (d DeployResult) getKillInstanceIDs() []string {
+	var killIDs []string
+	for _, instance := range d.killInstances {
+		killIDs = append(killIDs, instance.GetInstanceID())
+	}
+	return killIDs
+}
+
 // Decide whether depoly a new container or not
 type DeployPolicy interface {
+	// NOTE by huang-jl: Decide() will occupy memory even if it may failed by CtrRuntime
+	// or other component. The Caller need to free memory bound if necessary.
 	Decide(m *LambdaManager, lambdaName string) (DeployResult, error)
 }
 
@@ -71,7 +79,6 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res Depl
 		instance      *CtrInstance
 		targetPool    *CtrPool
 		oldPool       *CtrPool
-		indices       []int
 		killInstances []*CtrInstance
 	)
 
@@ -93,41 +100,43 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res Depl
 			err = fmt.Errorf("detect invalid status instance: %+v", instance)
 			return
 		}
+		if err = m.RemoveFromGlobalLRU(instance); err != nil {
+			return
+		}
 		res.decision = REUSE
 		res.instance = instance
 		return
 	}
 	// make sure we can checkpoint
 	if !m.Runtime.checkpointCache.Lookup(lambdaName) {
+		dplogger.Warn().Str("lambda name", lambdaName).Msg("could not find checkpoint image")
 		goto cold_start_routine
 	}
-	// find a candidate randomly from other pools
-	indices = rand.Perm(len(m.lambdas))
-	// TODO(huang-jl) remove this read lock
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, idx := range indices {
-		lambda := m.lambdas[idx]
-		if lambda == lambdaName {
-			continue
-		}
 
-		oldPool, err = m.GetCtrPoolWOLock(lambda)
+	// try to switch from other containers
+	// TODO(huang-jl) It is possible that instance here (poped from global lru)
+	// maybe a reuse case for lambdaName
+	instance = m.PopFromGlobalLRU()
+	if instance != nil {
+		if !instance.status.Valid() {
+			err = fmt.Errorf("detect invalid status instance: %+v", instance)
+			return
+		}
+		// TODO(huang-jl) it is possible that localPQIndex maybe non-zero
+		// (e.g., a container has been push back to local pq)
+		if instance.localPQIndex != 0 {
+			dplogger.Warn().Str("instance id", instance.GetInstanceID()).
+				Int("local PQ Index", instance.localPQIndex).Msg("find weird instance when pop from global lru list")
+		}
+		oldPool, err = m.GetCtrPool(instance.LambdaName)
 		if err != nil {
 			return
 		}
-		instance = oldPool.PopFromFree()
-		if instance != nil {
-			if !instance.status.Valid() {
-				err = fmt.Errorf("detect invalid status instance: %+v", instance)
-				return
-			}
-			res.decision = SWITCH
-			res.instance = instance
-			res.oldPool = oldPool
-			// TODO(huang-jl) switch also need take memory limitation into consideration !?
-			return
-		}
+		oldPool.RemoveFromFree(instance)
+		res.decision = SWITCH
+		res.instance = instance
+		res.oldPool = oldPool
+		return
 	}
 
 cold_start_routine:
@@ -169,6 +178,9 @@ func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployR
 			err = fmt.Errorf("detect invalid status instance: %+v", instance)
 			return
 		}
+		if err = m.RemoveFromGlobalLRU(instance); err != nil {
+			return
+		}
 		res.decision = REUSE
 		res.instance = instance
 		return
@@ -187,10 +199,9 @@ func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployR
 
 func (m *LambdaManager) pushBackKillingInstances(arr []*CtrInstance) {
 	for _, instance := range arr {
-		// this is a trade-off for simplicity
-		instance.lastActive = time.Now()
 		pool, _ := m.GetCtrPool(instance.LambdaName)
 		pool.PushIntoFree(instance)
+		m.PushIntoGlobalLRU(instance)
 		// When we push back instance, we need add the memory been used back
 		m.memBound.AddCtr(pool.memoryRequirement)
 	}
@@ -210,41 +221,20 @@ func (m *LambdaManager) findKillingInstanceFor(needed int64) (res []*CtrInstance
 		return
 	}
 
-	indices := rand.Perm(len(m.lambdas))
-	// we reach here means system experience heavy load, so it is ok to require lock
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var (
-		pool    *CtrPool
-		hasFree bool = true
-	)
-	for hasFree && extraSpace > 0 {
-		hasFree = false
-		for _, idx := range indices {
-			lambda := m.lambdas[idx]
-
-			pool, _ = m.GetCtrPoolWOLock(lambda)
-			instance := pool.PopFromFree()
-			if instance == nil {
-				continue
-			}
-			// NOTE by huang-jl: we decrement the memory requirement here,
-			// instead of the time it was destroy completely
-			//
-			// To be honest, the mem bound feature is hard to take effect accurately,
-			// all the algorithms here is approximate (a trade-off between efficiency
-			// and accuracy).
-			m.memBound.RemoveCtr(pool.memoryRequirement)
-			extraSpace -= pool.memoryRequirement
-			res = append(res, instance)
-
-			pool.mu.Lock()
-			if len(pool.free) > 0 {
-				hasFree = true
-			}
-			pool.mu.Unlock()
+	var pool *CtrPool
+	for extraSpace > 0 {
+		instance := m.PopFromGlobalLRU()
+		if instance == nil {
+			break
 		}
+		pool, err = m.GetCtrPool(instance.LambdaName) // ignore error
+		if err != nil {
+			return
+		}
+		pool.RemoveFromFree(instance)
+		m.memBound.RemoveCtr(pool.memoryRequirement)
+		extraSpace -= pool.memoryRequirement
+		res = append(res, instance)
 	}
 
 	if extraSpace > 0 {

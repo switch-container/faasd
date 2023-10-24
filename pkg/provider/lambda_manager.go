@@ -1,10 +1,10 @@
 package provider
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/containerd/containerd"
@@ -19,52 +19,16 @@ var lmlogger = log.With().
 	Str("component", "[LambdaManager]").
 	Logger()
 
-type MemoryBound struct {
-	bound int64
-	used  atomic.Int64
-}
-
-func NewMemoryBound(bound int64) MemoryBound {
-	return MemoryBound{
-		bound: bound,
-	}
-}
-
-func (m *MemoryBound) ExtraSpaceFor(needed int64) int64 {
-	return m.used.Load() + needed - m.bound
-}
-
-// Add ctr into pool which means increment memory been used
-//
-// return current used
-func (m *MemoryBound) AddCtr(usage int64) int64 {
-	return m.used.Add(usage)
-}
-
-// Remove ctr from pool which means decrement memory been used
-//
-// return current used
-func (m *MemoryBound) RemoveCtr(usage int64) int64 {
-	return m.used.Add(-usage)
-}
-
-// Switch ctr = RemoceCtr old + AddCtr new
-//
-// return current used
-func (m *MemoryBound) SwitchCtr(newUsage, oldUsage int64) int64 {
-	return m.used.Add(newUsage - oldUsage)
-}
-
-func (m *MemoryBound) Left() int64 {
-	return m.bound - m.used.Load()
-}
-
 // Note by huang-jl: In our workload,
 // after adding a lambda, it will not be deleted
 type LambdaManager struct {
-	pools     map[string]*CtrPool
-	lambdas   []string
-	mu        sync.RWMutex
+	pools   map[string]*CtrPool
+	lambdas []string
+	mu      sync.RWMutex
+
+	lru   GlobalFreePQ
+	lruMu sync.Mutex
+
 	policy    DeployPolicy
 	Runtime   CtrRuntime
 	terminate bool
@@ -187,18 +151,7 @@ func (m *LambdaManager) ColdStart(depolyRes DeployResult, id uint64) (*CtrInstan
 	pool := depolyRes.targetPool
 	instance, err := m.Runtime.ColdStart(pool.requirement, id)
 	if err == nil {
-		if len(depolyRes.killInstances) > 0 {
-			var ids []string
-			for _, instance := range depolyRes.killInstances {
-				ids = append(ids, instance.GetInstanceID())
-			}
-			lmlogger.Debug().Strs("kill instances", ids).
-				Str("instance id", GetInstanceID(pool.requirement.Service, id)).
-				Msg("cold start try to kill instances for depoly")
-		}
 		m.killInstancesForDepoly(depolyRes.killInstances)
-		lmlogger.Debug().Int64("memory left", m.memBound.Left()).Str("lambda name", pool.lambdaName).
-			Uint64("id", id).Msg("right after cold start and kill instances for depoly")
 	} else {
 		// if we meet error, we need free memory usage
 		m.memBound.RemoveCtr(pool.memoryRequirement)
@@ -211,7 +164,7 @@ func (m *LambdaManager) SwitchStart(depolyRes DeployResult, id uint64) (*CtrInst
 	instance, err := m.Runtime.SwitchStart(pool.requirement, id, depolyRes.instance)
 	if err == nil {
 		lmlogger.Debug().Int64("memory left", m.memBound.Left()).Str("lambda name", pool.lambdaName).
-			Uint64("id", id).Msg("right after switch")
+			Uint64("id", id).Msg("switch ctr succeed")
 	}
 	return instance, err
 }
@@ -249,11 +202,8 @@ restart:
 		if id == 0 {
 			id = depolyRes.targetPool.idAllocator.Add(1)
 		}
-		var killIDs []string
-		for _, instance := range depolyRes.killInstances {
-			killIDs = append(killIDs, instance.GetInstanceID())
-		}
-		if len(depolyRes.killInstances) > 0 {
+		killIDs := depolyRes.getKillInstanceIDs()
+		if len(killIDs) > 0 {
 			// TODO(huang-jl) remove this
 			lmlogger.Debug().Strs("kill instances", killIDs).Str("lambda name", lambdaName).Uint64("id", id).
 				Int64("mem left", m.memBound.Left()).Msg("policy decide to cold start instances and kill for space!")
@@ -275,10 +225,12 @@ restart:
 				goto restart
 			}
 		}
-		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", id).Msg("cold start succeed!")
+		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", id).Strs("kill instances", killIDs).
+			Int64("memory left", m.memBound.Left()).Msg("cold start succeed!")
 		return instance, err
 	case REUSE:
-		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", depolyRes.instance.ID).Msg("reuse ctr")
+		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", depolyRes.instance.ID).
+			Msg("policy decide to reuse ctr")
 		depolyRes.instance.depolyDecision = REUSE
 		return depolyRes.instance, nil
 	case SWITCH:
@@ -323,6 +275,7 @@ func killAllInstances(m *LambdaManager) {
 	lmlogger.Info().Msg("Start shutdown all instances of LambdaManager...")
 
 	for _, pool := range m.pools {
+		pool.mu.Lock()
 		for _, ctrInstance := range pool.free {
 			if ctrInstance.status.Valid() {
 				m.memBound.RemoveCtr(pool.memoryRequirement)
@@ -336,6 +289,7 @@ func killAllInstances(m *LambdaManager) {
 				m.KillInstance(ctrInstance)
 			}
 		}
+		pool.mu.Unlock()
 	}
 }
 
@@ -343,4 +297,33 @@ func (m *LambdaManager) registerCleanup(cleanupFn func(*LambdaManager)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanup = append(m.cleanup, cleanupFn)
+}
+
+func (m *LambdaManager) PushIntoGlobalLRU(instance *CtrInstance) {
+	m.lruMu.Lock()
+	defer m.lruMu.Unlock()
+	heap.Push(&m.lru, instance)
+}
+
+func (m *LambdaManager) PopFromGlobalLRU() *CtrInstance {
+	var res *CtrInstance
+	m.lruMu.Lock()
+	defer m.lruMu.Unlock()
+	if m.lru.Len() > 0 {
+		res = heap.Pop(&m.lru).(*CtrInstance)
+	}
+	return res
+}
+
+func (m *LambdaManager) RemoveFromGlobalLRU(instance *CtrInstance) error {
+	m.lruMu.Lock()
+	defer m.lruMu.Unlock()
+	if instance.globalPQIndex >= 0 {
+		tmp := heap.Remove(&m.lru, instance.globalPQIndex).(*CtrInstance)
+		// double check
+		if tmp.ID != instance.ID || tmp.LambdaName != instance.LambdaName {
+			return fmt.Errorf("corrupt global lru list detect for instance %s", instance.GetInstanceID())
+		}
+	}
+	return nil
 }

@@ -188,7 +188,7 @@ func makeProviderCmd() *cobra.Command {
 			ListCheckpoint:   provider.MakeCheckpointReader(m),
 			RegisterFunction: provider.MakeRegisterHandler(m),
 			InvokeFunction:   provider.MakeInvokeHandler(m, *config),
-			MetricFunction:   provider.MakeMetricReader(),
+			MetricFunction:   provider.MakeMetricHandler(),
 		}
 
 		log.Info().Int("port", *config.TCPPort).Msg("Listening on: 0.0.0.0")

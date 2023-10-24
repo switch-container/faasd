@@ -187,6 +187,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	instance.status = FINISHED
 	instance.lastActive = time.Now()
 	pool.MoveFromBusyToFree(instance.ID)
+	m.PushIntoGlobalLRU(instance)
 
 	if response.Body != nil {
 		defer response.Body.Close()
@@ -194,7 +195,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 
 	log.Debug().Str("instance", instanceID).Str("url", urlStr).Int("retry times", retry_times).
 		Str("depoly decision", instance.depolyDecision.String()).
-		Dur("total overhead", time.Since(start)).Msg("invoke succeed")
+		Dur("total overhead", time.Since(start)).Int("status code", response.StatusCode).Msg("invoke succeed")
 
 	clientHeader := w.Header()
 	copyHeaders(clientHeader, &response.Header)
@@ -317,11 +318,20 @@ func MakeRegisterHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.R
 	}
 }
 
-func MakeMetricReader() func(w http.ResponseWriter, r *http.Request) {
+func MakeMetricHandler() func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		response := metrics.GetMetricLogger().Output()
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(response))
-		w.WriteHeader(http.StatusOK)
+		switch r.Method {
+		case http.MethodGet:
+			response := metrics.GetMetricLogger().Output()
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte(response))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodDelete:
+			log.Debug().Msg("recv cleanup metric request")
+			metrics.GetMetricLogger().Cleanup()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "method not allowed for metric", http.StatusMethodNotAllowed)
+		}
 	}
 }
