@@ -39,7 +39,7 @@ type DeployResult struct {
 	instance *CtrInstance
 	// this is containers that should be killed
 	killInstances []*CtrInstance
-	// NOTE by huang-jl: this field point to ctr pool of lambda
+	// NOTE by huang-jl: this field point to ctr pool of service
 	// that need to be depolyed (mabye not the same as `instance`)
 	oldPool    *CtrPool
 	targetPool *CtrPool
@@ -69,12 +69,12 @@ func (d DeployResult) getKillInstanceIDs() []string {
 type DeployPolicy interface {
 	// NOTE by huang-jl: Decide() will occupy memory even if it may failed by CtrRuntime
 	// or other component. The Caller need to free memory bound if necessary.
-	Decide(m *LambdaManager, lambdaName string) (DeployResult, error)
+	Decide(m *LambdaManager, serviceName string) (DeployResult, error)
 }
 
 type NaiveSwitchPolicy struct{}
 
-func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res DeployResult, err error) {
+func (p NaiveSwitchPolicy) Decide(m *LambdaManager, serviceName string) (res DeployResult, err error) {
 	var (
 		instance      *CtrInstance
 		targetPool    *CtrPool
@@ -88,8 +88,7 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res Depl
 		}
 	}()
 
-	// targetPool is the pool of `lambdaName`
-	targetPool, err = m.GetCtrPool(lambdaName)
+	targetPool, err = m.GetCtrPool(serviceName)
 	if err != nil {
 		return
 	}
@@ -108,14 +107,14 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res Depl
 		return
 	}
 	// make sure we can checkpoint
-	if !m.Runtime.checkpointCache.Lookup(lambdaName) {
-		dplogger.Warn().Str("lambda name", lambdaName).Msg("could not find checkpoint image")
+	if !m.Runtime.checkpointCache.Lookup(serviceName) {
+		dplogger.Warn().Str("lambda name", serviceName).Msg("could not find checkpoint image")
 		goto cold_start_routine
 	}
 
 	// try to switch from other containers
 	// TODO(huang-jl) It is possible that instance here (poped from global lru)
-	// maybe a reuse case for lambdaName
+	// maybe a reuse case for serviceName
 	instance = m.PopFromGlobalLRU()
 	if instance != nil {
 		if !instance.status.Valid() {
@@ -128,7 +127,7 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, lambdaName string) (res Depl
 			dplogger.Warn().Str("instance id", instance.GetInstanceID()).
 				Int("local PQ Index", instance.localPQIndex).Msg("find weird instance when pop from global lru list")
 		}
-		oldPool, err = m.GetCtrPool(instance.LambdaName)
+		oldPool, err = m.GetCtrPool(instance.ServiceName)
 		if err != nil {
 			return
 		}
@@ -144,7 +143,7 @@ cold_start_routine:
 	// make sure there is enough memory
 	killInstances, err = m.findKillingInstanceFor(targetPool.memoryRequirement)
 	if err != nil {
-		err = errors.Wrapf(err, "findKillingInstanceFor %s (cold start) failed", lambdaName)
+		err = errors.Wrapf(err, "findKillingInstanceFor %s (cold start) failed", serviceName)
 		return
 	}
 	res.killInstances = killInstances
@@ -153,7 +152,7 @@ cold_start_routine:
 
 type BaselinePolicy struct{}
 
-func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployResult, err error) {
+func (p BaselinePolicy) Decide(m *LambdaManager, serviceName string) (res DeployResult, err error) {
 	var (
 		instance      *CtrInstance
 		pool          *CtrPool
@@ -166,8 +165,7 @@ func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployR
 		}
 	}()
 
-	// targetPool is the pool of `lambdaName`
-	pool, err = m.GetCtrPool(lambdaName)
+	pool, err = m.GetCtrPool(serviceName)
 	if err != nil {
 		return
 	}
@@ -190,7 +188,7 @@ func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployR
 	res.decision = COLD_START
 	killInstances, err = m.findKillingInstanceFor(pool.memoryRequirement)
 	if err != nil {
-		err = errors.Wrapf(err, "findKillingInstanceFor %s failed", lambdaName)
+		err = errors.Wrapf(err, "findKillingInstanceFor %s failed", serviceName)
 		return
 	}
 	res.killInstances = killInstances
@@ -199,7 +197,7 @@ func (p BaselinePolicy) Decide(m *LambdaManager, lambdaName string) (res DeployR
 
 func (m *LambdaManager) pushBackKillingInstances(arr []*CtrInstance) {
 	for _, instance := range arr {
-		pool, _ := m.GetCtrPool(instance.LambdaName)
+		pool, _ := m.GetCtrPool(instance.ServiceName)
 		pool.PushIntoFree(instance)
 		m.PushIntoGlobalLRU(instance)
 		// When we push back instance, we need add the memory been used back
@@ -227,7 +225,7 @@ func (m *LambdaManager) findKillingInstanceFor(needed int64) (res []*CtrInstance
 		if instance == nil {
 			break
 		}
-		pool, err = m.GetCtrPool(instance.LambdaName) // ignore error
+		pool, err = m.GetCtrPool(instance.ServiceName) // ignore error
 		if err != nil {
 			return
 		}

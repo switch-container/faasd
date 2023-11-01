@@ -304,7 +304,7 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 	cniID := cninetwork.NetID(task)
 
 	return &CtrInstance{
-		LambdaName:     serviceName,
+		ServiceName:    serviceName,
 		ID:             id,
 		Pid:            int(pid),
 		rootfs:         &rootOverlay,
@@ -336,7 +336,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	if err != nil {
 		return nil, err
 	}
-	if err = metrics.GetMetricLogger().Emit(pkg.PrepareSwitchFSLatency, serviceName, time.Since(start)); err != nil {
+	if err = metrics.GetMetricLogger().Emit(pkg.PrepareSwitchFSLatency, ServiceName2LambdaName(serviceName), time.Since(start)); err != nil {
 		crlogger.Error().Err(err).Msg("emit PrepareSwitchFSLatency metric failed")
 	}
 
@@ -345,14 +345,14 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRIULogFileName:   "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 4,
+		CRIULogLevel: 0,
 	}
 	start = time.Now()
 	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
 		int(candidate.Pid), config)
-	crlogger.Debug().Str("lambda name", serviceName).Dur("overhead", time.Since(start)).Msg("SwitchFor")
+	crlogger.Debug().Str("service name", serviceName).Dur("overhead", time.Since(start)).Msg("SwitchFor")
 	if err != nil {
-		return nil, errors.Wrapf(err, "switch from %s to %s failed", candidate.LambdaName, serviceName)
+		return nil, errors.Wrapf(err, "switch from %s to %s failed", candidate.ServiceName, serviceName)
 	}
 	newPid := switcher.PID()
 	if newPid <= 0 {
@@ -366,7 +366,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 	}
 
 	newInstance := candidate
-	newInstance.LambdaName = serviceName
+	newInstance.ServiceName = serviceName
 	newInstance.ID = id
 	newInstance.Pid = newPid
 	newInstance.appOverlay = appOverlay

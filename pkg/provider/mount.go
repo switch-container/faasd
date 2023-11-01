@@ -90,10 +90,6 @@ func NewRootfsManager() (*RootfsManager, error) {
 	}
 	for _, appPkg := range appPkgs {
 		m.appPkgs[appPkg.Name()] = true
-		m.cache[appPkg.Name()] = &AppOverlayCache{}
-		if err := m.fillAppOverlayCache(appPkg.Name(), pkg.AppOverlayCacheInitNum); err != nil {
-			return nil, fmt.Errorf("fill app overlay for %s failed", appPkg.Name())
-		}
 		rmlogger.Info().Str("pkg", appPkg.Name()).Msg("Init app pkgs")
 	}
 
@@ -104,7 +100,7 @@ func NewRootfsManager() (*RootfsManager, error) {
 			m.mu.Lock()
 			cache, exist := m.cache[serviceName]
 			if !exist {
-				rmlogger.Error().Str("lambda name", serviceName).Msg("cannot find lambda in cache")
+				rmlogger.Error().Str("service name", serviceName).Msg("cannot find service in cache")
 				m.mu.Unlock()
 				continue
 			}
@@ -115,11 +111,28 @@ func NewRootfsManager() (*RootfsManager, error) {
 			m.mu.Unlock()
 
 			if err := m.fillAppOverlayCache(serviceName, 2); err != nil {
-				rmlogger.Error().Err(err).Str("lambda name", serviceName).Msg("fill app overlay cache failed")
+				rmlogger.Error().Err(err).Str("service name", serviceName).Msg("fill app overlay cache failed")
 			}
 		}
 	}()
 	return m, nil
+}
+
+// Need initialize app overlay cache for each service
+func (m *RootfsManager) RegisterService(serviceName string) error {
+	m.mu.Lock()
+	_, exist := m.cache[serviceName]
+	if !exist {
+		m.cache[serviceName] = &AppOverlayCache{}
+		m.mu.Unlock()
+		if err := m.fillAppOverlayCache(serviceName, pkg.AppOverlayCacheInitNum); err != nil {
+			return fmt.Errorf("fill app overlay for %s failed", serviceName)
+		}
+	} else {
+		// if already exist, then we do nothing
+		m.mu.Unlock()
+	}
+	return nil
 }
 
 // TODO(huang-jl) clear app overlay's writable layer
@@ -169,15 +182,13 @@ func (m *RootfsManager) recyleAppOverlay(ctrInstance *CtrInstance) {
 	}
 	targetBindPath := path.Join(ctrInstance.rootfs.merged, "home/app")
 	unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
-	m.putAppOverlayToCache(ctrInstance.LambdaName, ctrInstance.appOverlay)
+	m.putAppOverlayToCache(ctrInstance.ServiceName, ctrInstance.appOverlay)
 	ctrInstance.appOverlay = nil
 }
 
 // I choose one goroutine to do fill overlaycache job
 func (m *RootfsManager) fillAppOverlayCache(serviceName string, num int) error {
 	appOverlays := make([]*OverlayInfo, num)
-	cache := m.cache[serviceName] // must exist
-
 	// Do not hold lock while prepare overlay
 	for i := 0; i < num; i++ {
 		appOverlay, err := m.PrepareAppOverlay(serviceName, false)
@@ -188,6 +199,7 @@ func (m *RootfsManager) fillAppOverlayCache(serviceName string, num int) error {
 	}
 
 	m.mu.Lock()
+	cache := m.cache[serviceName] // must exist
 	cache.data = append(cache.data, appOverlays...)
 	m.mu.Unlock()
 	return nil
@@ -200,9 +212,10 @@ func (m *RootfsManager) allocateAppOverlayID(serviceName string) uint64 {
 }
 
 func (m *RootfsManager) lookupPkg(serviceName string) (string, error) {
-	val, exist := m.appPkgs[serviceName]
+	lambdaName := ServiceName2LambdaName(serviceName)
+	val, exist := m.appPkgs[lambdaName]
 	if val && exist {
-		return path.Join(m.packageBase, serviceName), nil
+		return path.Join(m.packageBase, lambdaName), nil
 	}
 	return "", ErrPkgDirNotFind
 }
@@ -218,7 +231,7 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 		return res, errors.Wrapf(err, "lookup service app package %s failed", serviceName)
 	}
 	if showLog {
-		rmlogger.Debug().Str("lambda name", serviceName).Dur("lookup pkg", time.Since(start)).Send()
+		rmlogger.Debug().Str("service name", serviceName).Dur("lookup pkg", time.Since(start)).Send()
 	}
 	// NOTE by huang-jl: appOverlayID has no relationship with instanceID
 	appOverlayID := m.allocateAppOverlayID(serviceName)
@@ -234,7 +247,7 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 		}
 	}
 	if showLog {
-		rmlogger.Debug().Str("lambda name", serviceName).Dur("make dirs", time.Since(start)).Send()
+		rmlogger.Debug().Str("service name", serviceName).Dur("make dirs", time.Since(start)).Send()
 	}
 
 	start = time.Now()
@@ -243,7 +256,7 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 		return res, errors.Wrapf(err, "mount overlay to %s failed", mergedir)
 	}
 	if showLog {
-		rmlogger.Debug().Str("lambda name", serviceName).Dur("mount app overlay", time.Since(start)).Send()
+		rmlogger.Debug().Str("service name", serviceName).Dur("mount app overlay", time.Since(start)).Send()
 	}
 	// return the app overlay
 	res = &OverlayInfo{
@@ -275,7 +288,7 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInst
 	start := time.Now()
 	targetBindPath := path.Join(oldInfo.rootfs.merged, "home/app")
 	m.recyleAppOverlay(oldInfo)
-	rmlogger.Debug().Str("lambda name", serviceName).Dur("unmount old app overlay", time.Since(start)).Send()
+	rmlogger.Debug().Str("service name", serviceName).Dur("unmount old app overlay", time.Since(start)).Send()
 
 	start = time.Now()
 	appOverlay, err := m.getAppOverlayFromCache(serviceName)
@@ -283,7 +296,7 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInst
 		return nil, errors.Wrapf(err, "get app overlay from cache for %s failed", serviceName)
 	}
 	if appOverlay == nil {
-		rmlogger.Debug().Str("lambda name", serviceName).Msg("prepare switch rootfs sync!")
+		rmlogger.Debug().Str("service name", serviceName).Msg("prepare switch rootfs sync!")
 		appOverlay, err = m.PrepareAppOverlay(serviceName, true)
 		if err != nil {
 			return nil, errors.Wrapf(err, "prepare app overlay for %s failed", serviceName)
@@ -294,14 +307,14 @@ func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInst
 	case m.appOverlayCh <- serviceName:
 	default:
 	}
-	rmlogger.Debug().Str("lambda name", serviceName).Dur("prepare app overlay", time.Since(start)).Send()
+	rmlogger.Debug().Str("service name", serviceName).Dur("prepare app overlay", time.Since(start)).Send()
 	start = time.Now()
 	err = unix.Mount(appOverlay.merged, targetBindPath, "", unix.MS_BIND, "") // [0.8ms]
 	if err != nil {
 		return nil, errors.Wrapf(err, "bind mount overlay %s to %s failed",
 			appOverlay, targetBindPath)
 	}
-	rmlogger.Debug().Str("lambda name", serviceName).Dur("bind mount app overlay", time.Since(start)).Send()
+	rmlogger.Debug().Str("service name", serviceName).Dur("bind mount app overlay", time.Since(start)).Send()
 	return appOverlay, nil
 }
 

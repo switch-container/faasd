@@ -22,9 +22,9 @@ var lmlogger = log.With().
 // Note by huang-jl: In our workload,
 // after adding a lambda, it will not be deleted
 type LambdaManager struct {
-	pools   map[string]*CtrPool
-	lambdas []string
-	mu      sync.RWMutex
+	pools    map[string]*CtrPool
+	services []string
+	mu       sync.RWMutex
 
 	lru   GlobalFreePQ
 	lruMu sync.Mutex
@@ -81,35 +81,39 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 	return m, nil
 }
 
-func (m *LambdaManager) RegisterLambda(req types.FunctionDeployment) error {
-	lambdaName := req.Service
+func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
+	serviceName := req.Service
+  // first register for app overlay cache
+	if err := m.Runtime.rootfsManager.RegisterService(serviceName); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.pools[lambdaName]; !ok {
-		pool, err := NewCtrPool(lambdaName, req)
+	if _, ok := m.pools[serviceName]; !ok {
+		pool, err := NewCtrPool(serviceName, req)
 		if err != nil {
 			return err
 		}
-		m.pools[lambdaName] = pool
-		m.lambdas = append(m.lambdas, lambdaName)
-		lmlogger.Info().Str("lambda name", lambdaName).Int64("memory req", pool.memoryRequirement).
-			Msg("registering new lambda")
+		m.pools[serviceName] = pool
+		m.services = append(m.services, serviceName)
+		lmlogger.Info().Str("service name", serviceName).Int64("memory req", pool.memoryRequirement).
+			Msg("registering new service")
 	}
 	return nil
 }
 
-func (m *LambdaManager) GetCtrPool(lambdaName string) (*CtrPool, error) {
+func (m *LambdaManager) GetCtrPool(serviceName string) (*CtrPool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.GetCtrPoolWOLock(lambdaName)
+	return m.GetCtrPoolWOLock(serviceName)
 }
 
-func (m *LambdaManager) GetCtrPoolWOLock(lambdaName string) (*CtrPool, error) {
-	pool, ok := m.pools[lambdaName]
+func (m *LambdaManager) GetCtrPoolWOLock(serviceName string) (*CtrPool, error) {
+	pool, ok := m.pools[serviceName]
 	if ok {
 		return pool, nil
 	} else {
-		return nil, errors.Wrapf(ErrNotFoundLambda, "lambda %s", lambdaName)
+		return nil, errors.Wrapf(ErrNotFoundService, "service %s", serviceName)
 	}
 }
 
@@ -163,7 +167,7 @@ func (m *LambdaManager) SwitchStart(depolyRes DeployResult, id uint64) (*CtrInst
 	pool := depolyRes.targetPool
 	instance, err := m.Runtime.SwitchStart(pool.requirement, id, depolyRes.instance)
 	if err == nil {
-		lmlogger.Debug().Int64("memory left", m.memBound.Left()).Str("lambda name", pool.lambdaName).
+		lmlogger.Debug().Int64("memory left", m.memBound.Left()).Str("service name", pool.serviceName).
 			Uint64("id", id).Msg("switch ctr succeed")
 	}
 	return instance, err
@@ -171,7 +175,7 @@ func (m *LambdaManager) SwitchStart(depolyRes DeployResult, id uint64) (*CtrInst
 
 func (m *LambdaManager) KillInstance(instance *CtrInstance) error {
 	if err := m.Runtime.KillInstance(instance); err != nil {
-		return errors.Wrapf(err, "KillInstance %s-%d failed", instance.LambdaName, instance.ID)
+		return errors.Wrapf(err, "KillInstance %s-%d failed", instance.ServiceName, instance.ID)
 	}
 	return nil
 }
@@ -181,20 +185,20 @@ func (m *LambdaManager) KillInstance(instance *CtrInstance) error {
 // For a new invocation, we need make a CtrInstance for it.
 // Whether this CtrInstance from REUSE, SWITCH or COLD_START
 // is the detail hidden by this method.
-func (m *LambdaManager) MakeCtrInstanceFor(ctx context.Context, lambdaName string) (*CtrInstance, error) {
+func (m *LambdaManager) MakeCtrInstanceFor(ctx context.Context, serviceName string) (*CtrInstance, error) {
 	var (
 		depolyRes DeployResult
 		err       error
 		id        uint64
 	)
 restart:
-	depolyRes, err = m.policy.Decide(m, lambdaName)
+	depolyRes, err = m.policy.Decide(m, serviceName)
 	if err != nil {
 		return nil, err
 	}
-	if depolyRes.targetPool.lambdaName != lambdaName {
+	if depolyRes.targetPool.serviceName != serviceName {
 		return nil, fmt.Errorf("Cold start find pool of %s for %s",
-			depolyRes.targetPool.lambdaName, lambdaName)
+			depolyRes.targetPool.serviceName, serviceName)
 	}
 
 	switch depolyRes.decision {
@@ -205,31 +209,31 @@ restart:
 		killIDs := depolyRes.getKillInstanceIDs()
 		if len(killIDs) > 0 {
 			// TODO(huang-jl) remove this
-			lmlogger.Debug().Strs("kill instances", killIDs).Str("lambda name", lambdaName).Uint64("id", id).
+			lmlogger.Debug().Strs("kill instances", killIDs).Str("service name", serviceName).Uint64("id", id).
 				Int64("mem left", m.memBound.Left()).Msg("policy decide to cold start instances and kill for space!")
 		} else {
-			lmlogger.Debug().Str("lambda name", lambdaName).Uint64("id", id).
+			lmlogger.Debug().Str("service name", serviceName).Uint64("id", id).
 				Int64("mem left", m.memBound.Left()).Msg("policy decide to cold start instances w/o kill")
 		}
 		instance, err := m.ColdStart(depolyRes, id)
 		if errors.Is(err, ErrColdStartTooMuch) {
 			// NOTE by huang-jl: if we need retry depoly, we have to push killing instance back
-			lmlogger.Debug().Strs("kill instances", killIDs).Str("instance id", GetInstanceID(lambdaName, id)).
+			lmlogger.Debug().Strs("kill instances", killIDs).Str("instance id", GetInstanceID(serviceName, id)).
 				Msg("cold start too much, pushing back killing instance and retry")
 			m.pushBackKillingInstances(depolyRes.killInstances)
 			// NOTE by huang-jl: only COLD_START can retry
 			select {
 			case <-ctx.Done():
-				return nil, errors.Wrapf(ctx.Err(), "timeout MakeCtrInstanceFor %s spent more than 30 seconds", lambdaName)
+				return nil, errors.Wrapf(ctx.Err(), "timeout MakeCtrInstanceFor %s spent more than 30 seconds", serviceName)
 			case <-time.After(50 * time.Millisecond):
 				goto restart
 			}
 		}
-		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", id).Strs("kill instances", killIDs).
+		lmlogger.Debug().Str("service", serviceName).Uint64("id", id).Strs("kill instances", killIDs).
 			Int64("memory left", m.memBound.Left()).Msg("cold start succeed!")
 		return instance, err
 	case REUSE:
-		lmlogger.Debug().Str("lambda", lambdaName).Uint64("id", depolyRes.instance.ID).
+		lmlogger.Debug().Str("service", serviceName).Uint64("id", depolyRes.instance.ID).
 			Msg("policy decide to reuse ctr")
 		depolyRes.instance.depolyDecision = REUSE
 		return depolyRes.instance, nil
@@ -237,8 +241,8 @@ restart:
 		if id == 0 {
 			id = depolyRes.targetPool.idAllocator.Add(1)
 		}
-		lmlogger.Debug().Str("new lambda", lambdaName).Uint64("new id", id).
-			Str("old lambda", depolyRes.instance.LambdaName).
+		lmlogger.Debug().Str("new service", serviceName).Uint64("new id", id).
+			Str("old service", depolyRes.instance.ServiceName).
 			Uint64("old id", depolyRes.instance.ID).Msg("policy decide to switch ctr")
 		return m.SwitchStart(depolyRes, id)
 	}
@@ -321,7 +325,7 @@ func (m *LambdaManager) RemoveFromGlobalLRU(instance *CtrInstance) error {
 	if instance.globalPQIndex >= 0 {
 		tmp := heap.Remove(&m.lru, instance.globalPQIndex).(*CtrInstance)
 		// double check
-		if tmp.ID != instance.ID || tmp.LambdaName != instance.LambdaName {
+		if tmp.ID != instance.ID || tmp.ServiceName != instance.ServiceName {
 			return fmt.Errorf("corrupt global lru list detect for instance %s", instance.GetInstanceID())
 		}
 	}

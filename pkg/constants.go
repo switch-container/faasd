@@ -51,8 +51,8 @@ const (
 	SwitchKillMetric       = "criu-switch-kill-latency"
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
 
-	BaselineGCInterval  = 5 * time.Second
-	BaselineGCCriterion = 2 * time.Minute
+	BaselineGCInterval  = 10 * time.Second
+	BaselineGCCriterion = 10 * time.Minute
 
 	PopulateCtrNum = 65
 
@@ -60,5 +60,6 @@ const (
 	CtrGCConcurrencyLimit         = 5
 	KillInstancesConcurrencyLimit = 4
 
-	MemoryBound int64 = 32 * 1024 * 1024 * 1024
+  // MemoryBound int64 = 32 * 1024 * 1024 * 1024
+  MemoryBound int64 = 128 * 1024 * 1024 * 1024
 )

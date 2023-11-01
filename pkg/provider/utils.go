@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"path"
+	"strings"
 
 	"github.com/openfaas/faasd/pkg"
 	faasd "github.com/openfaas/faasd/pkg"
@@ -43,4 +44,12 @@ func ValidNamespace(store Labeller, namespace string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func ServiceName2LambdaName(serviceName string) string {
+	delimiterIdx := strings.Index(serviceName, "_")
+	if delimiterIdx == -1 {
+		return serviceName
+	}
+	return serviceName[:delimiterIdx]
 }

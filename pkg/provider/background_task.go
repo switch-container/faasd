@@ -76,7 +76,7 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 				dplogger.Warn().Str("instance id", instance.GetInstanceID()).
 					Int("local PQ Index", instance.localPQIndex).Msg("find weird instance when gc")
 			}
-			pool, _ := m.GetCtrPool(instance.LambdaName)
+			pool, _ := m.GetCtrPool(instance.ServiceName)
 			pool.RemoveFromFree(instance)
 			toBeGC = append(toBeGC, instance)
 			m.memBound.RemoveCtr(pool.memoryRequirement)
@@ -128,15 +128,15 @@ func NewPopulateCtrBackgroundTask(num int) PopulateCtrBackgroundTask {
 }
 
 func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
-	if err := m.RegisterLambda(t.baseCtrSpec); err != nil {
+	if err := m.RegisterService(t.baseCtrSpec); err != nil {
 		bglogger.Error().Err(err).Msg("register base ctr faild!")
 		return
 	}
 
-	lambdaName := t.baseCtrSpec.Service
-	pool, err := m.GetCtrPool(lambdaName)
+	serviceName := t.baseCtrSpec.Service
+	pool, err := m.GetCtrPool(serviceName)
 	if err != nil {
-		bglogger.Error().Err(err).Str("lambda name", lambdaName).
+		bglogger.Error().Err(err).Str("service name", serviceName).
 			Msg("PopulateCtrBackgroundTask get ctr pool failed")
 
 	}

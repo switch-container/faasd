@@ -19,14 +19,14 @@ type CtrPool struct {
 	busy        map[uint64]*CtrInstance
 	mu          sync.Mutex
 	idAllocator atomic.Uint64
-	lambdaName  string
+	serviceName string
 
 	requirement types.FunctionDeployment
 	// How many bytes does this type of function needed
 	memoryRequirement int64
 }
 
-func NewCtrPool(lambdaName string, req types.FunctionDeployment) (*CtrPool, error) {
+func NewCtrPool(serviceName string, req types.FunctionDeployment) (*CtrPool, error) {
 	var memoryLimit string = "1G"
 	if req.Limits != nil && len(req.Limits.Memory) > 0 {
 		memoryLimit = req.Limits.Memory
@@ -38,7 +38,7 @@ func NewCtrPool(lambdaName string, req types.FunctionDeployment) (*CtrPool, erro
 	}
 
 	return &CtrPool{
-		lambdaName:        lambdaName,
+		serviceName:       serviceName,
 		requirement:       req,
 		free:              NewCtrFreePQ(),
 		busy:              make(map[uint64]*CtrInstance),
@@ -109,8 +109,8 @@ func (pool *CtrPool) RemoveFromFree(instance *CtrInstance) error {
 	defer pool.mu.Unlock()
 	if instance.localPQIndex >= 0 {
 		tmp := heap.Remove(&pool.free, instance.localPQIndex).(*CtrInstance)
-    // double check
-		if tmp.ID != instance.ID || tmp.LambdaName != instance.LambdaName {
+		// double check
+		if tmp.ID != instance.ID || tmp.ServiceName != instance.ServiceName {
 			return fmt.Errorf("corrupt ctr free pool detect for instance %s", instance.GetInstanceID())
 		}
 	}
@@ -118,7 +118,7 @@ func (pool *CtrPool) RemoveFromFree(instance *CtrInstance) error {
 }
 
 type CtrInstance struct {
-	LambdaName     string // key in LambdaManager
+	ServiceName    string // key in LambdaManager
 	ID             uint64 // key in CtrPool
 	Pid            int    // init process id in Container
 	status         ContainerStatus
@@ -130,7 +130,7 @@ type CtrInstance struct {
 	depolyDecision DeployDecision // the depoly decision that created these instance
 	originalCtrID  string         // the original container ID
 	// e.g., pyase-5 which switch from hello-world-5, the original container ID is hello-world-5
-	// the originalCtrID is used for removing resources in containerd 
+	// the originalCtrID is used for removing resources in containerd
 
 	// This is used for global priority queue
 	globalPQIndex int
@@ -139,9 +139,9 @@ type CtrInstance struct {
 }
 
 func (i *CtrInstance) GetInstanceID() string {
-	return fmt.Sprintf("%s-%d", i.LambdaName, i.ID)
+	return fmt.Sprintf("%s-%d", i.ServiceName, i.ID)
 }
 
-func GetInstanceID(lambdaName string, id uint64) string {
-	return fmt.Sprintf("%s-%d", lambdaName, id)
+func GetInstanceID(serviceName string, id uint64) string {
+	return fmt.Sprintf("%s-%d", serviceName, id)
 }

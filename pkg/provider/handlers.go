@@ -24,18 +24,20 @@ import (
 // This part is almost copied from faas-provider/proxy
 // Here contains the handler I add for evaluation purpose:
 //
-// - register: Register the types.FunctionDeployment for specific lambdas
+// - register: Register the types.FunctionDeployment for specific services.
 // - invoke: the user should not care about which containers to handle the request
 //    so here comse the invoke API, the faasd will choose/start a container to run
-//    the user only need specify the lambdaName and payload
+//    the user only need specify the serviceName and payload
 
 const (
 	watchdogPort       = "8080"
 	defaultContentType = "text/plain"
+	retryInterval      = 100 * time.Millisecond
 )
 
 func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
-	lambdaName := instance.LambdaName
+  // here we only care about lambda
+  lambdaName := ServiceName2LambdaName(instance.ServiceName)
 	switch instance.depolyDecision {
 	case COLD_START:
 		if err := metrics.GetMetricLogger().Emit(pkg.ColdStartLatencyMetric, lambdaName, dur); err != nil {
@@ -72,7 +74,7 @@ func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 }
 
 func proxyRequest(ctx context.Context, originalReq *http.Request, proxyClient *http.Client,
-	targetUrl url.URL, lambdaName string) (retry_times int, response *http.Response, err error) {
+	targetUrl url.URL, serviceName string) (retry_times int, response *http.Response, err error) {
 
 	// buffer originalReq body for retry
 	originalBody, err := io.ReadAll(originalReq.Body)
@@ -85,7 +87,7 @@ func proxyRequest(ctx context.Context, originalReq *http.Request, proxyClient *h
 	pathVars := mux.Vars(originalReq)
 	proxyReq, err := buildProxyRequest(originalReq, targetUrl, pathVars["params"])
 	if err != nil {
-		err = errors.Wrapf(err, "Failed to resolve service %s", lambdaName)
+		err = errors.Wrapf(err, "Failed to resolve service %s", serviceName)
 		return
 	}
 	// the faasd watchdog inside the container may not be initialized
@@ -97,7 +99,7 @@ func proxyRequest(ctx context.Context, originalReq *http.Request, proxyClient *h
 			case <-ctx.Done():
 				err = ctx.Err()
 				return
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(retryInterval):
 			}
 		}
 
@@ -122,7 +124,10 @@ func proxyRequest(ctx context.Context, originalReq *http.Request, proxyClient *h
 
 // proxyRequest handles the actual resolution of and then request to the function service.
 func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *LambdaManager, proxyClient *http.Client) {
-	var err error
+	var (
+		err           error
+		prepareCtrDur time.Duration
+	)
 
 	start := time.Now()
 	ctx := originalReq.Context()
@@ -130,33 +135,30 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	ctx, cancelFunc := context.WithTimeout(ctx, time.Second*55)
 	defer cancelFunc()
 
-	// parse lambdaName
+	// parse serviceName
 	pathVars := mux.Vars(originalReq)
-	lambdaName := pathVars["name"]
-	if lambdaName == "" {
-		httputil.Errorf(w, http.StatusBadRequest, "Provide lambda name in the request path")
+	serviceName := pathVars["name"]
+	if serviceName == "" {
+		httputil.Errorf(w, http.StatusBadRequest, "Provide service name in the request path")
 		return
 	}
 
-	log.Debug().Str("lambda name", lambdaName).Msg("invoke handler recv new request!")
+	log.Debug().Str("service name", serviceName).Msg("invoke handler recv new request!")
 
 	begin := time.Now()
-	instance, err := m.MakeCtrInstanceFor(ctx, lambdaName)
+	instance, err := m.MakeCtrInstanceFor(ctx, serviceName)
 	if err != nil {
-		log.Error().Err(err).Str("lambda name", lambdaName).Msg("MakeCtrInstanceFor failed")
-		httputil.Errorf(w, http.StatusInternalServerError, "Failed to make ctr instance for %s: %s", lambdaName, err)
+		log.Error().Err(err).Str("service name", serviceName).Msg("MakeCtrInstanceFor failed")
+		httputil.Errorf(w, http.StatusInternalServerError, "Failed to make ctr instance for %s: %s", serviceName, err)
 		return
 	}
-	if err = recordStartupMetric(time.Since(begin), instance); err != nil {
-		httputil.Errorf(w, http.StatusInternalServerError, "failed to recordStartupMetric for %s: %s", lambdaName, err)
-		return
-	}
+	prepareCtrDur = time.Since(begin)
 
 	instanceID := instance.GetInstanceID()
 	// move instance to busy pool
-	pool, err := m.GetCtrPool(lambdaName)
+	pool, err := m.GetCtrPool(serviceName)
 	if err != nil {
-		httputil.Errorf(w, http.StatusInternalServerError, "Failed to get ctr pool for %s: %s", lambdaName, err)
+		httputil.Errorf(w, http.StatusInternalServerError, "Failed to get ctr pool for %s: %s", serviceName, err)
 		return
 	}
 	instance.status = RUNNING
@@ -168,19 +170,27 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		port = watchdogPort
 	}
 	urlStr := fmt.Sprintf("http://%s:%s", instance.IpAddress, port)
-	lambdaAddr, err := url.Parse(urlStr)
+	serviceAddr, err := url.Parse(urlStr)
 	if err != nil {
-		httputil.Errorf(w, http.StatusInternalServerError, "Failed to parse url for %s: %s", lambdaName, err)
+		httputil.Errorf(w, http.StatusInternalServerError, "Failed to parse url for %s: %s", serviceName, err)
 		return
 	}
 	// start proxy request
-	retry_times, response, err := proxyRequest(ctx, originalReq, proxyClient, *lambdaAddr, lambdaName)
+	retry_times, response, err := proxyRequest(ctx, originalReq, proxyClient, *serviceAddr, serviceName)
 	if err != nil {
 		// TODO(huang-jl) garbage collect this ctr instance
 		log.Error().Err(err).Str("instance", instanceID).Str("url", urlStr).
 			Str("depoly decision", instance.depolyDecision.String()).Msg("invoke failed")
 		instance.status = INVALID
 		httputil.Errorf(w, http.StatusInternalServerError, "[%s] invoke to %s failed: %s", instanceID, urlStr, err)
+		return
+	}
+
+	// NOTE by huang-jl: the startup latency should consists of app initialization time
+	// since we poll for the status of container (i.e. retryInterval), this time is not accurate.
+	// But the intialization time of container typically hundred of ms, so it is ok.
+	if err = recordStartupMetric(prepareCtrDur+time.Duration(retry_times)*retryInterval, instance); err != nil {
+		httputil.Errorf(w, http.StatusInternalServerError, "failed to recordStartupMetric for %s: %s", serviceName, err)
 		return
 	}
 
@@ -309,7 +319,7 @@ func MakeRegisterHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		if err := m.RegisterLambda(req); err != nil {
+		if err := m.RegisterService(req); err != nil {
 			log.Error().Err(err).Msg("Register failed")
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
