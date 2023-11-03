@@ -328,14 +328,15 @@ func MakeRegisterHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.R
 	}
 }
 
-func MakeMetricHandler() func(w http.ResponseWriter, r *http.Request) {
+func MakeMetricHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			response := metrics.GetMetricLogger().Output()
+      response += fmt.Sprintf("\nPeak memory usage: %d", m.memBound.peakUsed.Load())
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte(response))
 			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
 		case http.MethodDelete:
 			log.Debug().Msg("recv cleanup metric request")
 			metrics.GetMetricLogger().Cleanup()
