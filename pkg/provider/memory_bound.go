@@ -1,6 +1,14 @@
 package provider
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/rs/zerolog/log"
+)
+
+var mblogger = log.With().
+	Str("component", "[MemoryBound]").
+	Logger()
 
 type MemoryBound struct {
 	bound    int64
@@ -23,6 +31,7 @@ func (m *MemoryBound) ExtraSpaceFor(needed int64) int64 {
 // return current used
 func (m *MemoryBound) AddCtr(usage int64) int64 {
 	newUsed := m.used.Add(usage)
+  // mblogger.Debug().Int64("add usage", usage).Int64("new used val", newUsed).Msg("AddCtr")
 	if newUsed > m.peakUsed.Load() {
 		m.peakUsed.Store(newUsed)
 	}
@@ -33,7 +42,9 @@ func (m *MemoryBound) AddCtr(usage int64) int64 {
 //
 // return current used
 func (m *MemoryBound) RemoveCtr(usage int64) int64 {
-	return m.used.Add(-usage)
+  newUsed := m.used.Add(-usage)
+  // mblogger.Debug().Int64("remove usage", usage).Int64("new used val", newUsed).Msg("RemoveCtr")
+  return newUsed
 }
 
 // Switch ctr = RemoceCtr old + AddCtr new
@@ -41,6 +52,7 @@ func (m *MemoryBound) RemoveCtr(usage int64) int64 {
 // return current used
 func (m *MemoryBound) SwitchCtr(newUsage, oldUsage int64) int64 {
 	newUsed := m.used.Add(newUsage - oldUsage)
+  // mblogger.Debug().Int64("new ctr", newUsage).Int64("old ctr", oldUsage).Int64("new used val", newUsed).Msg("SwitchCtr")
 	if newUsed > m.peakUsed.Load() {
 		m.peakUsed.Store(newUsed)
 	}

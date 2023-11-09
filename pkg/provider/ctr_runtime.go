@@ -181,6 +181,80 @@ func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeploym
 	return image, nil
 }
 
+// NOTE by huang-jl: this is different from switch start
+// it only use the containerd's C/R interface to start new task
+func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
+	crlogger.Debug().Str("instance", instanceID).Msg("start criu start instance")
+	snapshotter := ""
+	if val, ok := os.LookupEnv("snapshotter"); ok {
+		snapshotter = val
+	}
+
+	// no always pull
+	image, err := r.prepull(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	envs := prepareEnv(req.EnvProcess, req.EnvVars)
+	mounts := getOSMounts()
+
+	labels, err := buildLabels(&req)
+	if err != nil {
+		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
+	}
+
+	// NOTE by huang-jl: This is a workaround for one bug:
+	// If we follow the memory limit in config here (e.g., 128MiB for pyaes)
+	// Then when doing switch (espeically from higher memory limit lambda to lower one)
+	// it is possible to OOM.
+	//
+	// So we just use a loose memory bound for all containers for now.
+	var memory *specs.LinuxMemory
+	{
+		qty, err := resource.ParseQuantity("1G")
+		if err != nil {
+			crlogger.Error().Err(err).Msg("parsing 1G as quantity failed")
+			return nil, err
+		}
+		v := qty.Value()
+		memory = &specs.LinuxMemory{Limit: &v}
+	}
+
+	// cpu limits
+	var (
+		period uint64 = uint64(100000)
+		quota  int64  = 0
+	)
+	container, err := r.Client.NewContainer(
+		ctx,
+		instanceID,
+		containerd.WithImage(image),
+		containerd.WithSnapshotter(snapshotter),
+		containerd.WithNewSnapshot(instanceID+"-snapshot", image),
+		// wrapper,
+		containerd.WithNewSpec(oci.WithImageConfig(image),
+			oci.WithHostname(instanceID),
+			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
+			oci.WithMounts(mounts),
+			oci.WithEnv(envs),
+			withCPU(quota, period),
+			withMemory(memory),
+		),
+		containerd.WithContainerLabels(labels),
+	)
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to create container: %s", instanceID)
+	}
+
+	if err := r.createTaskByCRIU(ctx, container, req.Service); err != nil {
+		return nil, err
+	}
+
+	return container, nil
+}
+
 func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
 	crlogger.Debug().Str("instance", instanceID).Msg("start cold start instance")
 	snapshotter := ""
@@ -406,6 +480,51 @@ func (r CtrRuntime) createTask(ctx context.Context, container containerd.Contain
 	name := container.ID()
 
 	task, taskErr := container.NewTask(ctx, cio.BinaryIO("/usr/local/bin/faasd", nil))
+
+	if taskErr != nil {
+		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
+	}
+
+	crlogger.Info().Str("Task ID", task.ID()).Str("Container ID", name).Uint32("Task PID", task.Pid()).Send()
+
+	start := time.Now()
+	labels := map[string]string{}
+	_, err := cninetwork.CreateCNINetwork(ctx, r.cni, task, labels)
+	crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
+
+	if err != nil {
+		return err
+	}
+
+	ip, err := cninetwork.GetIPAddress(name, task.Pid())
+	if err != nil {
+		return err
+	}
+
+	crlogger.Info().Str("IP", ip).Str("Container ID", name).Send()
+
+	_, waitErr := task.Wait(ctx)
+	if waitErr != nil {
+		return errors.Wrapf(waitErr, "Unable to wait for task to start: %s", name)
+	}
+
+	if startErr := task.Start(ctx); startErr != nil {
+		return errors.Wrapf(startErr, "Unable to start task: %s", name)
+	}
+	return nil
+}
+
+func (r CtrRuntime) createTaskByCRIU(ctx context.Context, container containerd.Container, serviceName string) error {
+
+	name := container.ID()
+
+	taskOpts := []containerd.NewTaskOpts{
+		func(_ context.Context, _ *containerd.Client, info *containerd.TaskInfo) error {
+			info.CheckpointPath = path.Join(r.checkpointCache.checkpointDir, serviceName)
+			return nil
+		},
+	}
+	task, taskErr := container.NewTask(ctx, cio.BinaryIO("/usr/local/bin/faasd", nil), taskOpts...)
 
 	if taskErr != nil {
 		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)

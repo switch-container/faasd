@@ -16,28 +16,10 @@ const (
 
 	defaultSnapshotter = "overlayfs"
 
-	// default checkpoint image directory
-	FaasdCheckpointDirPrefix = "/var/lib/faasd/checkpoints/images"
-	// default CRIU work directory (i.e. generate criu log)
-	FaasdCRIUCheckpointWorkPrefix = "/var/lib/faasd/checkpoints/criu-c-workdir"
-	FaasdCRIUResotreWorkPrefix    = "/var/lib/faasd/checkpoints/criu-r-workdir"
-
-	// pkg means /home/dir at
-	FaasdPackageDirPrefix  = "/var/lib/faasd/pkgs"
-	FaasdAppWorkDirPrefix  = "/var/lib/faasd/app/work"
-	FaasdAppUpperDirPrefix = "/var/lib/faasd/app/upper"
-	FaasdAppMergeDirPrefix = "/var/lib/faasd/app/merged"
-
 	// have to use our new kernel
 	PseudoMMDrvPath          = "/dev/pseudo_mm"
 	CRIUPseudoMMDrvInheritID = "pseudo-mm-drv"
-	DaxDevicePath            = "/dev/dax0.0"
-
-	// The initial app overlay cache size for each service
-	AppOverlayCacheInitNum = 1
-	// The upper bound of app overlay cache size for each service
-	AppOverlayCacheLimit = 16
-
+	// metrics
 	SwitchLatencyMetric    = "switch-latency"
 	SwitchCountMetric      = "switch-count"
 	ColdStartLatencyMetric = "cold-start-latency"
@@ -51,15 +33,34 @@ const (
 	SwitchKillMetric       = "criu-switch-kill-latency"
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
 
+	// NOTE by huang-jl: only the following params need be tuned
+	DaxDevicePath = "/dev/dax0.0"
+
+	// default checkpoint image directory
+	FaasdCheckpointDirPrefix = "/var/lib/faasd/checkpoints/images"
+	// default CRIU work directory (i.e. generate criu log)
+	FaasdCRIUCheckpointWorkPrefix = "/var/lib/faasd/checkpoints/criu-c-workdir"
+	FaasdCRIUResotreWorkPrefix    = "/var/lib/faasd/checkpoints/criu-r-workdir"
+
+	FaasdPackageDirPrefix  = "/var/lib/faasd/pkgs" // lower dir for app overlay
+	FaasdAppWorkDirPrefix  = "/var/lib/faasd/app/work"
+	FaasdAppUpperDirPrefix = "/var/lib/faasd/app/upper"
+	FaasdAppMergeDirPrefix = "/var/lib/faasd/app/merged"
+
+	// The initial app overlay cache size for each service
+	AppOverlayCacheInitNum = 1
+	// The upper bound of app overlay cache size for each service
+	AppOverlayCacheLimit = 16
+
 	BaselineGCInterval  = 10 * time.Second
 	BaselineGCCriterion = 10 * time.Minute
 
-	PopulateCtrNum = 65
+	PopulateCtrNum = 80
 
 	ColdStartConcurrencyLimit     = 10
 	CtrGCConcurrencyLimit         = 5
 	KillInstancesConcurrencyLimit = 4
 
-  // MemoryBound int64 = 32 * 1024 * 1024 * 1024
-  MemoryBound int64 = 128 * 1024 * 1024 * 1024
+  // default memory bound is 32 GB
+	MemoryBound int64 = 32
 )

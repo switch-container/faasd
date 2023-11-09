@@ -59,7 +59,8 @@ func (status ContainerStatus) CanSwitch() bool {
 	return status == IDLE || status == FINISHED
 }
 
-func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPolicy) (*LambdaManager, error) {
+// memBound: the memory bound in bytes
+func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPolicy, memBound int64) (*LambdaManager, error) {
 	rootfsManager, err := NewRootfsManager()
 	if err != nil {
 		return nil, err
@@ -72,7 +73,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 			false, pkg.ColdStartConcurrencyLimit),
 		terminate: false,
 		cleanup:   []func(*LambdaManager){killAllInstances},
-		memBound:  NewMemoryBound(pkg.MemoryBound),
+		memBound:  NewMemoryBound(memBound),
 	}
 	m.registerCleanup(func(lm *LambdaManager) {
 		close(lm.Runtime.reapCh)
@@ -177,6 +178,8 @@ func (m *LambdaManager) KillInstance(instance *CtrInstance) error {
 	if err := m.Runtime.KillInstance(instance); err != nil {
 		return errors.Wrapf(err, "KillInstance %s-%d failed", instance.ServiceName, instance.ID)
 	}
+  lmlogger.Debug().Str("service name", instance.ServiceName).
+			Uint64("id", instance.ID).Msg("kill instance succeed!")
 	return nil
 }
 
