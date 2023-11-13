@@ -39,6 +39,7 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().String("pull-policy", "Always", `Set to "Always" to force a pull of images upon deployment, or "IfNotPresent" to try to use a cached image.`)
 	command.Flags().Bool("baseline", false, `Set true to running in baseline mode (e.g., do container GC and disable switch).`)
 	command.Flags().Bool("no-bgtask", false, `Set true to to disable background task (e.g. legacy faasd mode)`)
+	command.Flags().Bool("criu", false, `Set true to to enable using criu for cold start (only usable for baseline)`)
 	command.Flags().Int64("mem", pkg.MemoryBound, `memory bound for all containers in faasd (GB)`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
@@ -54,13 +55,22 @@ func makeProviderCmd() *cobra.Command {
 		if flagErr != nil {
 			return flagErr
 		}
+		rawCRIU, flagErr := command.Flags().GetBool("criu")
+		if flagErr != nil {
+			return flagErr
+		}
 		memoryBound, flagErr := command.Flags().GetInt64("mem")
 		if flagErr != nil {
 			return flagErr
 		}
 		memoryBound = memoryBound * 1024 * 1024 * 1024
+
+		// check args
 		if memoryBound >= 256*1024*1024*1024 {
 			log.Fatal().Int64("mem bound", memoryBound).Msg("memory bound exceed 256GB!")
+		}
+		if rawCRIU && !isBaseline {
+			log.Fatal().Msg("cannot enable raw criu for non-baseline!")
 		}
 
 		alwaysPull := false
@@ -73,8 +83,8 @@ func makeProviderCmd() *cobra.Command {
 			return err
 		}
 
-		log.Info().Int64("mem bound", memoryBound).
-      Str("Service Timeout", config.WriteTimeout.String()).Msg("faasd-provider starting...")
+		log.Info().Int64("mem bound", memoryBound).Bool("raw criu", rawCRIU).Bool("isBaseline", isBaseline).
+			Str("Service Timeout", config.WriteTimeout.String()).Msg("faasd-provider starting...")
 		printVersion()
 
 		wd, err := os.Getwd()
@@ -116,13 +126,12 @@ func makeProviderCmd() *cobra.Command {
 				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval,
 					pkg.BaselineGCCriterion, pkg.CtrGCConcurrencyLimit),
 			}
-			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{}, memoryBound)
+			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{}, rawCRIU, memoryBound)
 		} else {
 			bgTask = []provider.BackgroundTask{
-				// only for baseline
 				provider.NewPopulateCtrBackgroundTask(pkg.PopulateCtrNum),
 			}
-			m, err = provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{}, memoryBound)
+			m, err = provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{}, false, memoryBound)
 		}
 		if err != nil {
 			return err

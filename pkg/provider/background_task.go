@@ -29,6 +29,7 @@ type InstanceGCBackgroundTask struct {
 }
 
 func NewInstanceGCBackgroundTask(interval, criterion time.Duration, concurrency int) InstanceGCBackgroundTask {
+  log.Info().Str("gc criterion", criterion.String()).Send()
 	return InstanceGCBackgroundTask{
 		interval:    interval,
 		gcCriterion: criterion,

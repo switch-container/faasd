@@ -60,7 +60,8 @@ func (status ContainerStatus) CanSwitch() bool {
 }
 
 // memBound: the memory bound in bytes
-func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPolicy, memBound int64) (*LambdaManager, error) {
+func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPolicy,
+	rawCRIU bool, memBound int64) (*LambdaManager, error) {
 	rootfsManager, err := NewRootfsManager()
 	if err != nil {
 		return nil, err
@@ -70,7 +71,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 		pools:  map[string]*CtrPool{},
 		policy: policy,
 		Runtime: NewCtrRuntime(client, cni, rootfsManager, checkpointCache,
-			false, pkg.ColdStartConcurrencyLimit),
+			rawCRIU, false, pkg.ColdStartConcurrencyLimit),
 		terminate: false,
 		cleanup:   []func(*LambdaManager){killAllInstances},
 		memBound:  NewMemoryBound(memBound),
@@ -84,7 +85,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 
 func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 	serviceName := req.Service
-  // first register for app overlay cache
+	// first register for app overlay cache
 	if err := m.Runtime.rootfsManager.RegisterService(serviceName); err != nil {
 		return err
 	}
@@ -178,8 +179,8 @@ func (m *LambdaManager) KillInstance(instance *CtrInstance) error {
 	if err := m.Runtime.KillInstance(instance); err != nil {
 		return errors.Wrapf(err, "KillInstance %s-%d failed", instance.ServiceName, instance.ID)
 	}
-  lmlogger.Debug().Str("service name", instance.ServiceName).
-			Uint64("id", instance.ID).Msg("kill instance succeed!")
+	lmlogger.Debug().Str("service name", instance.ServiceName).
+		Uint64("id", instance.ID).Msg("kill instance succeed!")
 	return nil
 }
 

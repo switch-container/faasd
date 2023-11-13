@@ -49,7 +49,9 @@ type CtrRuntime struct {
 	Client *containerd.Client
 	cni    gocni.CNI
 	// always try pull from registry for most up-to-date docker images
-	alwaysPull      bool
+	alwaysPull bool
+	// indicate whether to use raw CRIU to cold start instances
+	rawCRIU         bool
 	rootfsManager   *RootfsManager
 	checkpointCache *CheckpointCache
 	workerCh        chan<- ColdStartReq
@@ -57,13 +59,14 @@ type CtrRuntime struct {
 }
 
 func NewCtrRuntime(client *containerd.Client, cni gocni.CNI, rootfsManager *RootfsManager,
-	checkpointCache *CheckpointCache, alwaysPull bool, concurrency int) CtrRuntime {
+	checkpointCache *CheckpointCache, rawCRIU, alwaysPull bool, concurrency int) CtrRuntime {
 	// TODO(huang-jl) Is an 2-element channel enough ?
 	workerCh := make(chan ColdStartReq, 2)
 	reapCh := make(chan int, 1024)
 	r := CtrRuntime{
 		Client:          client,
 		cni:             cni,
+		rawCRIU:         rawCRIU,
 		alwaysPull:      alwaysPull,
 		rootfsManager:   rootfsManager,
 		checkpointCache: checkpointCache,
@@ -136,7 +139,10 @@ func (r CtrRuntime) ColdStart(req types.FunctionDeployment, id uint64) (*CtrInst
 }
 
 func (r CtrRuntime) coldStart(req types.FunctionDeployment, id uint64) (*CtrInstance, error) {
-	var err error
+	var (
+		err error
+		ctr containerd.Container
+	)
 	instanceID := GetInstanceID(req.Service, id)
 	namespace := GetRequestNamespace(req.Namespace)
 	// Check if namespace exists, and it has the openfaas label
@@ -148,7 +154,13 @@ func (r CtrRuntime) coldStart(req types.FunctionDeployment, id uint64) (*CtrInst
 		return nil, fmt.Errorf("namespace not valid")
 	}
 	ctx := namespaces.WithNamespace(context.Background(), namespace)
-	ctr, err := r.coldStartInstance(ctx, req, instanceID)
+
+	// start container
+	if r.rawCRIU {
+		ctr, err = r.criuStartInstance(ctx, req, instanceID)
+	} else {
+		ctr, err = r.coldStartInstance(ctx, req, instanceID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +196,7 @@ func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeploym
 // NOTE by huang-jl: this is different from switch start
 // it only use the containerd's C/R interface to start new task
 func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
-	crlogger.Debug().Str("instance", instanceID).Msg("start criu start instance")
+	crlogger.Debug().Str("instance", instanceID).Msg("raw criu cold start")
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
 		snapshotter = val
@@ -256,7 +268,7 @@ func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDep
 }
 
 func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
-	crlogger.Debug().Str("instance", instanceID).Msg("start cold start instance")
+	crlogger.Debug().Str("instance", instanceID).Msg("traditional cold start")
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
 		snapshotter = val
@@ -530,32 +542,27 @@ func (r CtrRuntime) createTaskByCRIU(ctx context.Context, container containerd.C
 		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
 	}
 
+  // we need first start task, then we can get pid
+	if startErr := task.Start(ctx); startErr != nil {
+		return errors.Wrapf(startErr, "Unable to start task: %s", name)
+	}
+
 	crlogger.Info().Str("Task ID", task.ID()).Str("Container ID", name).Uint32("Task PID", task.Pid()).Send()
 
 	start := time.Now()
 	labels := map[string]string{}
 	_, err := cninetwork.CreateCNINetwork(ctx, r.cni, task, labels)
-	crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
-
 	if err != nil {
 		return err
 	}
+	crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
 
 	ip, err := cninetwork.GetIPAddress(name, task.Pid())
 	if err != nil {
 		return err
 	}
-
 	crlogger.Info().Str("IP", ip).Str("Container ID", name).Send()
 
-	_, waitErr := task.Wait(ctx)
-	if waitErr != nil {
-		return errors.Wrapf(waitErr, "Unable to wait for task to start: %s", name)
-	}
-
-	if startErr := task.Start(ctx); startErr != nil {
-		return errors.Wrapf(startErr, "Unable to start task: %s", name)
-	}
 	return nil
 }
 
