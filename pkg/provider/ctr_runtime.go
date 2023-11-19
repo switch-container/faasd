@@ -222,9 +222,10 @@ func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDep
 	// it is possible to OOM.
 	//
 	// So we just use a loose memory bound for all containers for now.
+	// Note: the raw criu need more memory.
 	var memory *specs.LinuxMemory
 	{
-		qty, err := resource.ParseQuantity("1G")
+		qty, err := resource.ParseQuantity("4G")
 		if err != nil {
 			crlogger.Error().Err(err).Msg("parsing 1G as quantity failed")
 			return nil, err
@@ -536,20 +537,22 @@ func (r CtrRuntime) createTaskByCRIU(ctx context.Context, container containerd.C
 			return nil
 		},
 	}
+	start := time.Now()
 	task, taskErr := container.NewTask(ctx, cio.BinaryIO("/usr/local/bin/faasd", nil), taskOpts...)
 
 	if taskErr != nil {
 		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
 	}
 
-  // we need first start task, then we can get pid
+	// we need first start task, then we can get pid
 	if startErr := task.Start(ctx); startErr != nil {
 		return errors.Wrapf(startErr, "Unable to start task: %s", name)
 	}
 
-	crlogger.Info().Str("Task ID", task.ID()).Str("Container ID", name).Uint32("Task PID", task.Pid()).Send()
+	crlogger.Info().Dur("criu overhead", time.Since(start)).Str("Task ID", task.ID()).
+		Str("Container ID", name).Uint32("Task PID", task.Pid()).Send()
 
-	start := time.Now()
+	start = time.Now()
 	labels := map[string]string{}
 	_, err := cninetwork.CreateCNINetwork(ctx, r.cni, task, labels)
 	if err != nil {

@@ -52,8 +52,8 @@ const (
 	// The upper bound of app overlay cache size for each service
 	AppOverlayCacheLimit = 16
 
-	BaselineGCInterval  = 10 * time.Second
-	BaselineGCCriterion = 10 * time.Minute
+	BaselineGCInterval  = 5 * time.Second
+	BaselineGCCriterion = 10
 
 	PopulateCtrNum = 80
 

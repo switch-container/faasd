@@ -10,6 +10,7 @@ import (
 	"path"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/containerd/containerd"
 	bootstrap "github.com/openfaas/faas-provider"
@@ -41,6 +42,7 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().Bool("no-bgtask", false, `Set true to to disable background task (e.g. legacy faasd mode)`)
 	command.Flags().Bool("criu", false, `Set true to to enable using criu for cold start (only usable for baseline)`)
 	command.Flags().Int64("mem", pkg.MemoryBound, `memory bound for all containers in faasd (GB)`)
+	command.Flags().Int64("gc", pkg.BaselineGCCriterion, `gc criterion in minutes`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
@@ -56,6 +58,10 @@ func makeProviderCmd() *cobra.Command {
 			return flagErr
 		}
 		rawCRIU, flagErr := command.Flags().GetBool("criu")
+		if flagErr != nil {
+			return flagErr
+		}
+		gcMinute, flagErr := command.Flags().GetInt64("gc")
 		if flagErr != nil {
 			return flagErr
 		}
@@ -124,7 +130,7 @@ func makeProviderCmd() *cobra.Command {
 			bgTask = []provider.BackgroundTask{
 				// only for baseline
 				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval,
-					pkg.BaselineGCCriterion, pkg.CtrGCConcurrencyLimit),
+					time.Duration(gcMinute) * time.Minute, pkg.CtrGCConcurrencyLimit),
 			}
 			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{}, rawCRIU, memoryBound)
 		} else {
