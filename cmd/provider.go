@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,8 +41,8 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().String("pull-policy", "Always", `Set to "Always" to force a pull of images upon deployment, or "IfNotPresent" to try to use a cached image.`)
 	command.Flags().Bool("baseline", false, `Set true to running in baseline mode (e.g., do container GC and disable switch).`)
 	command.Flags().Bool("no-bgtask", false, `Set true to to disable background task (e.g. legacy faasd mode)`)
-	command.Flags().Bool("criu", false, `Set true to to enable using criu for cold start (only usable for baseline)`)
-	command.Flags().Int64("mem", pkg.MemoryBound, `memory bound for all containers in faasd (GB)`)
+	command.Flags().String("start-method", "cold", `cold (cold start), criu (criu restore) or lazy (criu lazy restore), only enbale in baseline mode`)
+	command.Flags().Int64("mem", pkg.DefaultMemoryBound, `memory bound for all containers in faasd (GB)`)
 	command.Flags().Int64("gc", pkg.BaselineGCCriterion, `gc criterion in minutes`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
@@ -57,7 +58,7 @@ func makeProviderCmd() *cobra.Command {
 		if flagErr != nil {
 			return flagErr
 		}
-		rawCRIU, flagErr := command.Flags().GetBool("criu")
+		startMethod, flagErr := command.Flags().GetString("start-method")
 		if flagErr != nil {
 			return flagErr
 		}
@@ -75,8 +76,9 @@ func makeProviderCmd() *cobra.Command {
 		if memoryBound >= 256*1024*1024*1024 {
 			log.Fatal().Int64("mem bound", memoryBound).Msg("memory bound exceed 256GB!")
 		}
-		if rawCRIU && !isBaseline {
-			log.Fatal().Msg("cannot enable raw criu for non-baseline!")
+		startMethod = strings.ToLower(startMethod)
+		if startMethod != "cold" && !isBaseline {
+			log.Fatal().Str("start method", startMethod).Msg("cannot enable non-default start-method for non-baseline!")
 		}
 
 		alwaysPull := false
@@ -89,7 +91,7 @@ func makeProviderCmd() *cobra.Command {
 			return err
 		}
 
-		log.Info().Int64("mem bound", memoryBound).Bool("raw criu", rawCRIU).Bool("isBaseline", isBaseline).
+		log.Info().Int64("mem bound", memoryBound).Str("start method", startMethod).Bool("isBaseline", isBaseline).
 			Str("Service Timeout", config.WriteTimeout.String()).Msg("faasd-provider starting...")
 		printVersion()
 
@@ -130,14 +132,18 @@ func makeProviderCmd() *cobra.Command {
 			bgTask = []provider.BackgroundTask{
 				// only for baseline
 				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval,
-					time.Duration(gcMinute) * time.Minute, pkg.CtrGCConcurrencyLimit),
+					time.Duration(gcMinute)*time.Minute, pkg.CtrGCConcurrencyLimit),
 			}
-			m, err = provider.NewLambdaManager(client, cni, provider.BaselinePolicy{}, rawCRIU, memoryBound)
+			baselinePolicy, err := provider.NewBaselinePolicy(startMethod)
+			if err != nil {
+				return err
+			}
+			m, err = provider.NewLambdaManager(client, cni, baselinePolicy, memoryBound)
 		} else {
 			bgTask = []provider.BackgroundTask{
 				provider.NewPopulateCtrBackgroundTask(pkg.PopulateCtrNum),
 			}
-			m, err = provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{}, false, memoryBound)
+			m, err = provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{}, memoryBound)
 		}
 		if err != nil {
 			return err
@@ -158,8 +164,8 @@ func makeProviderCmd() *cobra.Command {
 		}{
 			{pkg.SwitchLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.SwitchCountMetric, metrics.FIND_GRAINED_COUNTER},
-			{pkg.ColdStartLatencyMetric, metrics.LATENCY_METRIC},
-			{pkg.ColdStartCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.StartNewLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.StartNewCountMetric, metrics.FIND_GRAINED_COUNTER},
 			{pkg.ReuseCountMetric, metrics.FIND_GRAINED_COUNTER},
 			{pkg.ReuseLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.InvokeCountMetric, metrics.SINGLE_COUNTER},

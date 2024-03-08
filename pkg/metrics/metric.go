@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -63,7 +64,7 @@ func (m *MetricLogger) RegisterMetric(metricName string, ty MetricType) {
 }
 
 func (m *MetricLogger) Output() string {
-	str := fmt.Sprintf("[MetricLogger]:\n")
+	str := fmt.Sprintf("Metrics:\n")
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, metric := range m.metrics {
@@ -117,11 +118,27 @@ func (lm *LatencyMetric) Cleanup() {
 func (lm *LatencyMetric) String() string {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-	str := fmt.Sprintf("latency metric %s: ", lm.label)
-	for lambdaName, latencies := range lm.data {
-		str += fmt.Sprintf("%s -> %+v ", lambdaName, latencies)
+	// convert it to json
+	entry := struct {
+		Label   string               `json:"label"`
+		Latency map[string][]float32 `json:"data"`
+	}{
+		Label:   lm.label,
+		Latency: make(map[string][]float32),
 	}
-	return str
+	for lambdaName, latencies := range lm.data {
+		dur := make([]float32, 0, len(latencies))
+		for _, lat := range latencies {
+			dur = append(dur, float32(lat.Microseconds())/1000.0)
+		}
+		entry.Latency[lambdaName] = dur
+	}
+
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Sprintf("invalid metrics %s: %v", lm.label, err)
+	}
+	return string(b)
 }
 
 type FineGrainedCounterMetric struct {
@@ -150,11 +167,21 @@ func (cm *FineGrainedCounterMetric) Cleanup() {
 func (cm *FineGrainedCounterMetric) String() string {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	str := fmt.Sprintf("find grained counter metric %s: ", cm.label)
-	for lambdaName, counter := range cm.data {
-		str += fmt.Sprintf("%s -> %+v ", lambdaName, counter)
+	entry := struct {
+		Label string         `json:"label"`
+		Data  map[string]int `json:"data"`
+	}{
+		Label: cm.label,
+		Data:  make(map[string]int),
 	}
-	return str
+	for lambdaName, counter := range cm.data {
+		entry.Data[lambdaName] = counter
+	}
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Sprintf("invalid metrics %s: %v", cm.label, err)
+	}
+	return string(b)
 }
 
 type CounterMetric struct {
@@ -186,5 +213,16 @@ func (cm *CounterMetric) Cleanup() {
 }
 
 func (cm *CounterMetric) String() string {
-	return fmt.Sprintf("single counter metric %s: %d", cm.label, cm.data.Load())
+	entry := struct {
+		Label string `json:"label"`
+		Val   int64  `json:"data"`
+	}{
+		Label: cm.label,
+		Val:   cm.data.Load(),
+	}
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Sprintf("invalid metrics %s: %v", cm.label, err)
+	}
+	return string(b)
 }

@@ -29,7 +29,7 @@ type InstanceGCBackgroundTask struct {
 }
 
 func NewInstanceGCBackgroundTask(interval, criterion time.Duration, concurrency int) InstanceGCBackgroundTask {
-  log.Info().Str("gc criterion", criterion.String()).Send()
+	log.Info().Str("gc criterion", criterion.String()).Send()
 	return InstanceGCBackgroundTask{
 		interval:    interval,
 		gcCriterion: criterion,
@@ -74,7 +74,7 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 			// we go here means need to delete the instance from pool
 			// and add it to gc list
 			if instance.localPQIndex != 0 {
-				dplogger.Warn().Str("instance id", instance.GetInstanceID()).
+				dplogger.Error().Str("instance id", instance.GetInstanceID()).
 					Int("local PQ Index", instance.localPQIndex).Msg("find weird instance when gc")
 			}
 			pool, _ := m.GetCtrPool(instance.ServiceName)
@@ -148,7 +148,7 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 	retry:
 		// but actually the background task should not retry or crash
 		// since there should be no load or request while populating
-		instance, err := m.ColdStart(DeployResult{
+		instance, err := m.StartNewCtr(DeployResult{
 			decision:   COLD_START,
 			targetPool: pool,
 		}, id)

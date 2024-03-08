@@ -58,10 +58,11 @@ func NewRootfsManager() (*RootfsManager, error) {
 	items, err := os.ReadDir(pkg.FaasdAppMergeDirPrefix)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read dir %s failed", pkg.FaasdAppMergeDirPrefix)
-	}
-	for _, item := range items {
-		p := path.Join(pkg.FaasdAppMergeDirPrefix, item.Name())
-		unix.Unmount(p, unix.MNT_DETACH)
+	} else if err == nil {
+		for _, item := range items {
+			p := path.Join(pkg.FaasdAppMergeDirPrefix, item.Name())
+			unix.Unmount(p, unix.MNT_DETACH)
+		}
 	}
 	// make a clean app dir
 	for _, dir := range [3]string{pkg.FaasdAppWorkDirPrefix,

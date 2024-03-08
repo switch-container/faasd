@@ -17,6 +17,10 @@ func (d DeployDecision) String() string {
 	switch d {
 	case COLD_START:
 		return "cold start"
+	case CR_START:
+		return "criu"
+	case CR_LAZY_START:
+		return "lazy"
 	case REUSE:
 		return "reuse"
 	case SWITCH:
@@ -28,6 +32,8 @@ func (d DeployDecision) String() string {
 
 const (
 	COLD_START DeployDecision = iota
+	CR_START
+	CR_LAZY_START
 	REUSE
 	SWITCH
 )
@@ -47,7 +53,7 @@ type DeployResult struct {
 
 func (d DeployResult) applyMemUsage(m *LambdaManager) {
 	switch d.decision {
-	case COLD_START:
+	case COLD_START, CR_LAZY_START, CR_START:
 		m.memBound.AddCtr(d.targetPool.memoryRequirement)
 	case REUSE:
 	case SWITCH:
@@ -150,7 +156,24 @@ cold_start_routine:
 	return
 }
 
-type BaselinePolicy struct{}
+type BaselinePolicy struct {
+	defaultDecision DeployDecision
+}
+
+func NewBaselinePolicy(defaultStartMethod string) (BaselinePolicy, error) {
+	var decision DeployDecision
+	switch defaultStartMethod {
+	case "cold":
+		decision = COLD_START
+	case "criu":
+		decision = CR_START
+	case "lazy":
+		decision = CR_LAZY_START
+	default:
+		return BaselinePolicy{}, errors.Errorf("invalid default start method for baseline: %v", defaultStartMethod)
+	}
+	return BaselinePolicy{decision}, nil
+}
 
 func (p BaselinePolicy) Decide(m *LambdaManager, serviceName string) (res DeployResult, err error) {
 	var (
@@ -184,8 +207,8 @@ func (p BaselinePolicy) Decide(m *LambdaManager, serviceName string) (res Deploy
 		return
 	}
 
-	// if we cannot reuse, then cold-start
-	res.decision = COLD_START
+	// if we cannot reuse, then start new container
+	res.decision = p.defaultDecision
 	killInstances, err = m.findKillingInstanceFor(pool.memoryRequirement)
 	if err != nil {
 		err = errors.Wrapf(err, "findKillingInstanceFor %s failed", serviceName)

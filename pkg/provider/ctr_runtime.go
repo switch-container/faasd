@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"syscall"
@@ -14,6 +16,7 @@ import (
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
+	"github.com/containerd/containerd/runtime/v2/runc/options"
 	gocni "github.com/containerd/go-cni"
 	"github.com/docker/distribution/reference"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -25,6 +28,7 @@ import (
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -34,13 +38,14 @@ var crlogger = log.With().
 	Str("component", "[CtrRuntime]").
 	Logger()
 
-type ColdStartReq struct {
-	req    types.FunctionDeployment
-	id     uint64
-	notify chan<- ColdStartRes
+type StartNewCtrReq struct {
+	types.FunctionDeployment
+	id       uint64
+	decision DeployDecision
+	notify   chan<- StartNewCtrRes
 }
 
-type ColdStartRes struct {
+type StartNewCtrRes struct {
 	instance *CtrInstance
 	err      error
 }
@@ -49,24 +54,21 @@ type CtrRuntime struct {
 	Client *containerd.Client
 	cni    gocni.CNI
 	// always try pull from registry for most up-to-date docker images
-	alwaysPull bool
-	// indicate whether to use raw CRIU to cold start instances
-	rawCRIU         bool
+	alwaysPull      bool
 	rootfsManager   *RootfsManager
 	checkpointCache *CheckpointCache
-	workerCh        chan<- ColdStartReq
+	workerCh        chan<- StartNewCtrReq
 	reapCh          chan<- int
 }
 
 func NewCtrRuntime(client *containerd.Client, cni gocni.CNI, rootfsManager *RootfsManager,
-	checkpointCache *CheckpointCache, rawCRIU, alwaysPull bool, concurrency int) CtrRuntime {
+	checkpointCache *CheckpointCache, alwaysPull bool, concurrency int) CtrRuntime {
 	// TODO(huang-jl) Is an 2-element channel enough ?
-	workerCh := make(chan ColdStartReq, 2)
+	workerCh := make(chan StartNewCtrReq, 2)
 	reapCh := make(chan int, 1024)
 	r := CtrRuntime{
 		Client:          client,
 		cni:             cni,
-		rawCRIU:         rawCRIU,
 		alwaysPull:      alwaysPull,
 		rootfsManager:   rootfsManager,
 		checkpointCache: checkpointCache,
@@ -114,21 +116,26 @@ func (r CtrRuntime) reap(reapCh <-chan int) {
 }
 
 // This is the worker that cold start container
-func (r CtrRuntime) work(workerCh <-chan ColdStartReq) {
+func (r CtrRuntime) work(workerCh <-chan StartNewCtrReq) {
 	for req := range workerCh {
-		instance, err := r.coldStart(req.req, req.id)
-		res := ColdStartRes{instance: instance, err: err}
+		instance, err := r.startNewCtr(req)
+		res := StartNewCtrRes{instance: instance, err: err}
 		req.notify <- res
 	}
 }
 
 // NOTE by huang-jl: cold-start of the entire system has concurrency limitation.
 // There will only be fixed amount of worker to do cold-start jobs. (refer to work() above)
-func (r CtrRuntime) ColdStart(req types.FunctionDeployment, id uint64) (*CtrInstance, error) {
-	notify := make(chan ColdStartRes)
-	coldStartReq := ColdStartReq{req: req, id: id, notify: notify}
+func (r CtrRuntime) StartNewCtr(d types.FunctionDeployment, id uint64, decision DeployDecision) (*CtrInstance, error) {
+	notify := make(chan StartNewCtrRes)
+	req := StartNewCtrReq{
+		FunctionDeployment: d,
+		id:                 id,
+		decision:           decision,
+		notify:             notify,
+	}
 	select {
-	case r.workerCh <- coldStartReq:
+	case r.workerCh <- req:
 		res := <-notify
 		return res.instance, res.err
 	default:
@@ -138,12 +145,11 @@ func (r CtrRuntime) ColdStart(req types.FunctionDeployment, id uint64) (*CtrInst
 	}
 }
 
-func (r CtrRuntime) coldStart(req types.FunctionDeployment, id uint64) (*CtrInstance, error) {
+func (r CtrRuntime) startNewCtr(req StartNewCtrReq) (*CtrInstance, error) {
 	var (
 		err error
 		ctr containerd.Container
 	)
-	instanceID := GetInstanceID(req.Service, id)
 	namespace := GetRequestNamespace(req.Namespace)
 	// Check if namespace exists, and it has the openfaas label
 	valid, err := ValidNamespace(r.Client.NamespaceService(), namespace) // [825us]
@@ -151,20 +157,25 @@ func (r CtrRuntime) coldStart(req types.FunctionDeployment, id uint64) (*CtrInst
 		return nil, err
 	}
 	if !valid {
-		return nil, fmt.Errorf("namespace not valid")
+		return nil, errors.New("namespace not valid")
 	}
 	ctx := namespaces.WithNamespace(context.Background(), namespace)
 
 	// start container
-	if r.rawCRIU {
-		ctr, err = r.criuStartInstance(ctx, req, instanceID)
-	} else {
-		ctr, err = r.coldStartInstance(ctx, req, instanceID)
+	switch req.decision {
+	case COLD_START:
+		ctr, err = r.coldStartInstance(ctx, req)
+	case CR_START:
+		ctr, err = r.criuStartInstance(ctx, req)
+	case CR_LAZY_START:
+		ctr, err = r.criuLazyStartInstance(ctx, req)
+	default:
+		return nil, errors.Errorf("invalid decision: %v", req.decision)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return r.InitCtrInstance(ctx, ctr, req.Service, id)
+	return r.InitCtrInstance(ctx, ctr, req)
 }
 
 func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeployment) (containerd.Image, error) {
@@ -195,7 +206,8 @@ func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeploym
 
 // NOTE by huang-jl: this is different from switch start
 // it only use the containerd's C/R interface to start new task
-func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
+func (r CtrRuntime) criuStartInstance(ctx context.Context, req StartNewCtrReq) (containerd.Container, error) {
+	instanceID := GetInstanceID(req.Service, req.id)
 	crlogger.Debug().Str("instance", instanceID).Msg("raw criu cold start")
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
@@ -203,7 +215,7 @@ func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDep
 	}
 
 	// no always pull
-	image, err := r.prepull(ctx, req)
+	image, err := r.prepull(ctx, req.FunctionDeployment)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +223,7 @@ func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDep
 	envs := prepareEnv(req.EnvProcess, req.EnvVars)
 	mounts := getOSMounts()
 
-	labels, err := buildLabels(&req)
+	labels, err := buildLabels(&req.FunctionDeployment)
 	if err != nil {
 		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
 	}
@@ -261,22 +273,25 @@ func (r CtrRuntime) criuStartInstance(ctx context.Context, req types.FunctionDep
 		return nil, errors.Wrapf(err, "unable to create container: %s", instanceID)
 	}
 
-	if err := r.createTaskByCRIU(ctx, container, req.Service); err != nil {
+	if err := r.createTaskByCRIU(ctx, container, req.Service, instanceID); err != nil {
 		return nil, err
 	}
 
 	return container, nil
 }
 
-func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDeployment, instanceID string) (containerd.Container, error) {
-	crlogger.Debug().Str("instance", instanceID).Msg("traditional cold start")
+// NOTE by huang-jl: this is different from switch start
+// it only use the containerd's C/R interface to start new task
+func (r CtrRuntime) criuLazyStartInstance(ctx context.Context, req StartNewCtrReq) (containerd.Container, error) {
+	instanceID := GetInstanceID(req.Service, req.id)
+	crlogger.Debug().Str("instance", instanceID).Msg("criu lazy start")
 	snapshotter := ""
 	if val, ok := os.LookupEnv("snapshotter"); ok {
 		snapshotter = val
 	}
 
 	// no always pull
-	image, err := r.prepull(ctx, req)
+	image, err := r.prepull(ctx, req.FunctionDeployment)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +299,85 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 	envs := prepareEnv(req.EnvProcess, req.EnvVars)
 	mounts := getOSMounts()
 
-	labels, err := buildLabels(&req)
+	labels, err := buildLabels(&req.FunctionDeployment)
+	if err != nil {
+		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
+	}
+
+	// NOTE by huang-jl: This is a workaround for one bug:
+	// If we follow the memory limit in config here (e.g., 128MiB for pyaes)
+	// Then when doing switch (espeically from higher memory limit lambda to lower one)
+	// it is possible to OOM.
+	//
+	// So we just use a loose memory bound for all containers for now.
+	// Note: the raw criu need more memory.
+	var memory *specs.LinuxMemory
+	{
+		qty, err := resource.ParseQuantity("4G")
+		if err != nil {
+			crlogger.Error().Err(err).Msg("parsing 1G as quantity failed")
+			return nil, err
+		}
+		v := qty.Value()
+		memory = &specs.LinuxMemory{Limit: &v}
+	}
+
+	// cpu limits
+	var (
+		period uint64 = uint64(100000)
+		quota  int64  = 0
+	)
+	container, err := r.Client.NewContainer(
+		ctx,
+		instanceID,
+		containerd.WithImage(image),
+		containerd.WithSnapshotter(snapshotter),
+		containerd.WithNewSnapshot(instanceID+"-snapshot", image),
+		// wrapper,
+		containerd.WithNewSpec(oci.WithImageConfig(image),
+			oci.WithHostname(instanceID),
+			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
+			oci.WithMounts(mounts),
+			oci.WithEnv(envs),
+			withCPU(quota, period),
+			withMemory(memory),
+		),
+		containerd.WithContainerLabels(labels),
+	)
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to create container: %s", instanceID)
+	}
+
+	// start lazy page daemon first
+	if err := r.startLazyPageDaemon(ctx, req.Service, instanceID); err != nil {
+		return nil, err
+	}
+	if err := r.createTaskByLazyCRIU(ctx, container, req.Service, instanceID); err != nil {
+		return nil, err
+	}
+
+	return container, nil
+}
+
+func (r CtrRuntime) coldStartInstance(ctx context.Context, req StartNewCtrReq) (containerd.Container, error) {
+	instanceID := GetInstanceID(req.Service, req.id)
+	crlogger.Debug().Str("instance", instanceID).Msg("traditional cold start")
+	snapshotter := ""
+	if val, ok := os.LookupEnv("snapshotter"); ok {
+		snapshotter = val
+	}
+
+	// no always pull
+	image, err := r.prepull(ctx, req.FunctionDeployment)
+	if err != nil {
+		return nil, err
+	}
+
+	envs := prepareEnv(req.EnvProcess, req.EnvVars)
+	mounts := getOSMounts()
+
+	labels, err := buildLabels(&req.FunctionDeployment)
 	if err != nil {
 		return nil, fmt.Errorf("unable to apply labels to container: %s, error: %w", instanceID, err)
 	}
@@ -358,8 +451,7 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req types.FunctionDep
 }
 
 // generate CtrInstance from containerd.Container
-func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Container, serviceName string,
-	id uint64) (*CtrInstance, error) {
+func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Container, req StartNewCtrReq) (*CtrInstance, error) {
 	task, err := ctr.Task(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -391,14 +483,14 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 	cniID := cninetwork.NetID(task)
 
 	return &CtrInstance{
-		ServiceName:    serviceName,
-		ID:             id,
+		ServiceName:    req.Service,
+		ID:             req.id,
 		Pid:            int(pid),
 		rootfs:         &rootOverlay,
 		IpAddress:      ip,
 		cniID:          cniID,
 		status:         IDLE,
-		depolyDecision: COLD_START,
+		depolyDecision: req.decision,
 		originalCtrID:  name,
 		lastActive:     time.Now(),
 		localPQIndex:   -1,
@@ -527,13 +619,112 @@ func (r CtrRuntime) createTask(ctx context.Context, container containerd.Contain
 	return nil
 }
 
-func (r CtrRuntime) createTaskByCRIU(ctx context.Context, container containerd.Container, serviceName string) error {
+func (r CtrRuntime) createTaskByCRIU(ctx context.Context, container containerd.Container, serviceName, instanceID string) error {
 
 	name := container.ID()
 
 	taskOpts := []containerd.NewTaskOpts{
 		func(_ context.Context, _ *containerd.Client, info *containerd.TaskInfo) error {
-			info.CheckpointPath = path.Join(r.checkpointCache.checkpointDir, serviceName)
+			info.Options = &options.Options{
+				CriuImagePath: path.Join(r.checkpointCache.checkpointDir, serviceName),
+				CriuWorkPath:  path.Join(pkg.FaasdCRIUResotreWorkPrefix, instanceID),
+			}
+			return nil
+		},
+	}
+	start := time.Now()
+	task, taskErr := container.NewTask(ctx, cio.BinaryIO("/usr/local/bin/faasd", nil), taskOpts...)
+
+	if taskErr != nil {
+		return fmt.Errorf("unable to start task: %s, error: %w", name, taskErr)
+	}
+
+	// we need first start task, then we can get pid
+	if startErr := task.Start(ctx); startErr != nil {
+		return errors.Wrapf(startErr, "Unable to start task: %s", name)
+	}
+
+	crlogger.Info().Dur("criu overhead", time.Since(start)).Str("Task ID", task.ID()).
+		Str("Container ID", name).Uint32("Task PID", task.Pid()).Send()
+
+	start = time.Now()
+	labels := map[string]string{}
+	_, err := cninetwork.CreateCNINetwork(ctx, r.cni, task, labels)
+	if err != nil {
+		return err
+	}
+	crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
+
+	ip, err := cninetwork.GetIPAddress(name, task.Pid())
+	if err != nil {
+		return err
+	}
+	crlogger.Info().Str("IP", ip).Str("Container ID", name).Send()
+
+	return nil
+}
+
+func (r CtrRuntime) startLazyPageDaemon(ctx context.Context, serviceName, instanceID string) error {
+	workDir := path.Join(pkg.FaasdCRIUResotreWorkPrefix, instanceID)
+	imgDir := path.Join(r.checkpointCache.checkpointDir, serviceName)
+	args := []string{
+		"lazy-pages",
+		"--images-dir", imgDir,
+		"--work-dir", workDir,
+		// TODO(huang-jl) daemon mode or not ? "-d",
+		"--log-file", "lazy-page-daemon.log",
+		"-v4",
+	}
+	if err := os.Mkdir(workDir, 0700); err != nil && !os.IsExist(err) {
+		return err
+	}
+	cmd := exec.Command("criu", args...)
+	cmd.Stdin = nil
+	outPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	errPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	crlogger.Debug().Int("daemon pid", cmd.Process.Pid).Str("lambda", serviceName).Msg("start lazy page daemon")
+	go func() {
+		output, err := os.OpenFile(path.Join(workDir, "page-daemon-output"), unix.O_CREAT|unix.O_EXCL|unix.O_RDWR, 0644)
+		if err != nil {
+			crlogger.Err(err).Msg("open page-daemon-output failed")
+		}
+		go func() {
+			if _, err := io.Copy(output, outPipe); err != nil {
+				crlogger.Err(err).Msg("copy lazy-pages out error")
+			}
+		}()
+		go func() {
+			if _, err := io.Copy(output, errPipe); err != nil {
+				crlogger.Err(err).Msg("copy lazy-pages err error")
+			}
+		}()
+		if err := cmd.Wait(); err != nil {
+			crlogger.Err(err).Msg("criu lazy-pages error")
+		}
+	}()
+	return nil
+}
+
+func (r CtrRuntime) createTaskByLazyCRIU(ctx context.Context, container containerd.Container, serviceName, instanceID string) error {
+
+	name := container.ID()
+
+	taskOpts := []containerd.NewTaskOpts{
+		func(_ context.Context, _ *containerd.Client, info *containerd.TaskInfo) error {
+			info.Options = &options.Options{
+				CriuImagePath: path.Join(r.checkpointCache.checkpointDir, serviceName),
+				CriuWorkPath:  path.Join(pkg.FaasdCRIUResotreWorkPrefix, instanceID),
+				CriuLazyPages: true,
+			}
 			return nil
 		},
 	}

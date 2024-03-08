@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -61,7 +62,7 @@ func (status ContainerStatus) CanSwitch() bool {
 
 // memBound: the memory bound in bytes
 func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPolicy,
-	rawCRIU bool, memBound int64) (*LambdaManager, error) {
+	memBound int64) (*LambdaManager, error) {
 	rootfsManager, err := NewRootfsManager()
 	if err != nil {
 		return nil, err
@@ -71,7 +72,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 		pools:  map[string]*CtrPool{},
 		policy: policy,
 		Runtime: NewCtrRuntime(client, cni, rootfsManager, checkpointCache,
-			rawCRIU, false, pkg.ColdStartConcurrencyLimit),
+			false, pkg.StartNewCtrConcurrencyLimit),
 		terminate: false,
 		cleanup:   []func(*LambdaManager){killAllInstances},
 		memBound:  NewMemoryBound(memBound),
@@ -80,6 +81,20 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 		close(lm.Runtime.reapCh)
 		close(lm.Runtime.workerCh)
 	})
+	// make sure the following dir exist
+	for _, dir := range []string{
+		pkg.FaasdCheckpointDirPrefix,
+		pkg.FaasdCRIUCheckpointWorkPrefix,
+		pkg.FaasdCRIUResotreWorkPrefix,
+		pkg.FaasdPackageDirPrefix,
+		pkg.FaasdAppWorkDirPrefix,
+		pkg.FaasdAppUpperDirPrefix,
+		pkg.FaasdAppMergeDirPrefix,
+	} {
+		if err := ensureDirExist(dir); err != nil {
+			return m, nil
+		}
+	}
 	return m, nil
 }
 
@@ -153,9 +168,9 @@ func (m *LambdaManager) killInstancesForDepoly(instances []*CtrInstance) {
 
 // A couple of unified entrypoints for operating on containers.
 // So that we could record needed information here.
-func (m *LambdaManager) ColdStart(depolyRes DeployResult, id uint64) (*CtrInstance, error) {
+func (m *LambdaManager) StartNewCtr(depolyRes DeployResult, id uint64) (*CtrInstance, error) {
 	pool := depolyRes.targetPool
-	instance, err := m.Runtime.ColdStart(pool.requirement, id)
+	instance, err := m.Runtime.StartNewCtr(pool.requirement, id, depolyRes.decision)
 	if err == nil {
 		m.killInstancesForDepoly(depolyRes.killInstances)
 	} else {
@@ -206,36 +221,6 @@ restart:
 	}
 
 	switch depolyRes.decision {
-	case COLD_START:
-		if id == 0 {
-			id = depolyRes.targetPool.idAllocator.Add(1)
-		}
-		killIDs := depolyRes.getKillInstanceIDs()
-		if len(killIDs) > 0 {
-			// TODO(huang-jl) remove this
-			lmlogger.Debug().Strs("kill instances", killIDs).Str("service name", serviceName).Uint64("id", id).
-				Int64("mem left", m.memBound.Left()).Msg("policy decide to cold start instances and kill for space!")
-		} else {
-			lmlogger.Debug().Str("service name", serviceName).Uint64("id", id).
-				Int64("mem left", m.memBound.Left()).Msg("policy decide to cold start instances w/o kill")
-		}
-		instance, err := m.ColdStart(depolyRes, id)
-		if errors.Is(err, ErrColdStartTooMuch) {
-			// NOTE by huang-jl: if we need retry depoly, we have to push killing instance back
-			lmlogger.Debug().Strs("kill instances", killIDs).Str("instance id", GetInstanceID(serviceName, id)).
-				Msg("cold start too much, pushing back killing instance and retry")
-			m.pushBackKillingInstances(depolyRes.killInstances)
-			// NOTE by huang-jl: only COLD_START can retry
-			select {
-			case <-ctx.Done():
-				return nil, errors.Wrapf(ctx.Err(), "timeout MakeCtrInstanceFor %s spent more than 30 seconds", serviceName)
-			case <-time.After(50 * time.Millisecond):
-				goto restart
-			}
-		}
-		lmlogger.Debug().Str("service", serviceName).Uint64("id", id).Strs("kill instances", killIDs).
-			Int64("memory left", m.memBound.Left()).Msg("cold start succeed!")
-		return instance, err
 	case REUSE:
 		lmlogger.Debug().Str("service", serviceName).Uint64("id", depolyRes.instance.ID).
 			Msg("policy decide to reuse ctr")
@@ -249,8 +234,34 @@ restart:
 			Str("old service", depolyRes.instance.ServiceName).
 			Uint64("old id", depolyRes.instance.ID).Msg("policy decide to switch ctr")
 		return m.SwitchStart(depolyRes, id)
+	default: // COLD_START, CR_START, CR_LAZY_START
+		if id == 0 {
+			id = depolyRes.targetPool.idAllocator.Add(1)
+		}
+		killIDs := depolyRes.getKillInstanceIDs()
+		lmlogger.Debug().Strs("kill instances", killIDs).Str("service name", serviceName).Uint64("id", id).
+			Int64("mem left", m.memBound.Left()).Str("decision", depolyRes.decision.String()).
+			Msg("policy decide to start new instances")
+		instance, err := m.StartNewCtr(depolyRes, id)
+		if errors.Is(err, ErrColdStartTooMuch) {
+			// NOTE by huang-jl: if we need retry depoly, we have to push killing instance back
+			lmlogger.Debug().Strs("kill instances", killIDs).Str("service name", serviceName).Uint64("id", id).
+				Msg("cold start too much, pushing back killing instances and retry")
+			m.pushBackKillingInstances(depolyRes.killInstances)
+			// NOTE by huang-jl: only COLD_START can retry
+			select {
+			case <-ctx.Done():
+				return nil, errors.Wrapf(ctx.Err(), "timeout MakeCtrInstanceFor %s spent more than 30 seconds", serviceName)
+			case <-time.After(50 * time.Millisecond):
+				goto restart
+			}
+		}
+		if err == nil {
+			lmlogger.Debug().Str("service", serviceName).Uint64("id", id).Strs("kill instances", killIDs).
+				Int64("memory left", m.memBound.Left()).Msg("start new instance succeed!")
+		}
+		return instance, err
 	}
-	return nil, fmt.Errorf("unknown decision: %+v", depolyRes.decision)
 }
 
 func (m *LambdaManager) ListInstances() ([]*CtrInstance, error) {
@@ -331,6 +342,15 @@ func (m *LambdaManager) RemoveFromGlobalLRU(instance *CtrInstance) error {
 		// double check
 		if tmp.ID != instance.ID || tmp.ServiceName != instance.ServiceName {
 			return fmt.Errorf("corrupt global lru list detect for instance %s", instance.GetInstanceID())
+		}
+	}
+	return nil
+}
+func ensureDirExist(folder string) error {
+	if _, err := os.Stat(folder); err != nil {
+		err = os.MkdirAll(folder, 0644)
+		if err != nil {
+			return err
 		}
 	}
 	return nil

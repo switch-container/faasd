@@ -36,14 +36,14 @@ const (
 )
 
 func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
-  // here we only care about lambda
-  lambdaName := ServiceName2LambdaName(instance.ServiceName)
+	// here we only care about lambda
+	lambdaName := ServiceName2LambdaName(instance.ServiceName)
 	switch instance.depolyDecision {
-	case COLD_START:
-		if err := metrics.GetMetricLogger().Emit(pkg.ColdStartLatencyMetric, lambdaName, dur); err != nil {
+	case COLD_START, CR_START, CR_LAZY_START:
+		if err := metrics.GetMetricLogger().Emit(pkg.StartNewLatencyMetric, lambdaName, dur); err != nil {
 			return err
 		}
-		if err := metrics.GetMetricLogger().Emit(pkg.ColdStartCountMetric, lambdaName, 1); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, lambdaName, 1); err != nil {
 			return err
 		}
 	case REUSE:
@@ -333,7 +333,7 @@ func MakeMetricHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.Req
 		switch r.Method {
 		case http.MethodGet:
 			response := metrics.GetMetricLogger().Output()
-      response += fmt.Sprintf("\nPeak memory usage: %d", m.memBound.peakUsed.Load())
+			response += fmt.Sprintf("\nPeak memory usage: %d", m.memBound.peakUsed.Load())
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(response))

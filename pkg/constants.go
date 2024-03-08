@@ -22,8 +22,8 @@ const (
 	// metrics
 	SwitchLatencyMetric    = "switch-latency"
 	SwitchCountMetric      = "switch-count"
-	ColdStartLatencyMetric = "cold-start-latency"
-	ColdStartCountMetric   = "cold-start-count"
+	StartNewLatencyMetric  = "start-new-latency"
+	StartNewCountMetric    = "start-new-count"
 	ReuseCountMetric       = "reuse-count"
 	ReuseLatencyMetric     = "reuse-latency"
 	InvokeCountMetric      = "invoke-count"
@@ -57,10 +57,10 @@ const (
 
 	PopulateCtrNum = 80
 
-	ColdStartConcurrencyLimit     = 10
+	StartNewCtrConcurrencyLimit   = 10
 	CtrGCConcurrencyLimit         = 5
 	KillInstancesConcurrencyLimit = 4
 
-  // default memory bound is 32 GB
-	MemoryBound int64 = 32
+	// default memory bound is 32 GB
+	DefaultMemoryBound int64 = 32
 )
