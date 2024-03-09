@@ -1,9 +1,12 @@
 package switcher
 
 type SwitcherConfig struct {
-	CRIUWorkDirectory string
-	CRIULogFileName   string
-	CRIULogLevel      int
+	TargetServiceName string
+	CRImageDir        string
+	CRWorkDir         string
+	CRLogFileName     string
+	CRLogLevel        int
+	CandidatePID      int
 }
 
 // example config value

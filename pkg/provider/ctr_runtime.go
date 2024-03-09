@@ -23,7 +23,6 @@ import (
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
 	cninetwork "github.com/openfaas/faasd/pkg/cninetwork"
-	"github.com/openfaas/faasd/pkg/metrics"
 	"github.com/openfaas/faasd/pkg/provider/switcher"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
@@ -148,7 +147,7 @@ func (r CtrRuntime) StartNewCtr(d types.FunctionDeployment, id uint64, decision 
 func (r CtrRuntime) startNewCtr(req StartNewCtrReq) (*CtrInstance, error) {
 	var (
 		err error
-		ctr containerd.Container
+		ctr Ctr
 	)
 	namespace := GetRequestNamespace(req.Namespace)
 	// Check if namespace exists, and it has the openfaas label
@@ -175,7 +174,7 @@ func (r CtrRuntime) startNewCtr(req StartNewCtrReq) (*CtrInstance, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.InitCtrInstance(ctx, ctr, req)
+	return r.InitCtrInstance(ctr, req), nil
 }
 
 func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeployment) (containerd.Image, error) {
@@ -206,7 +205,7 @@ func (runtime CtrRuntime) prepull(ctx context.Context, req types.FunctionDeploym
 
 // NOTE by huang-jl: this is different from switch start
 // it only use the containerd's C/R interface to start new task
-func (r CtrRuntime) criuStartInstance(ctx context.Context, req StartNewCtrReq) (containerd.Container, error) {
+func (r CtrRuntime) criuStartInstance(ctx context.Context, req StartNewCtrReq) (Ctr, error) {
 	instanceID := GetInstanceID(req.Service, req.id)
 	crlogger.Debug().Str("instance", instanceID).Msg("raw criu cold start")
 	snapshotter := ""
@@ -277,12 +276,12 @@ func (r CtrRuntime) criuStartInstance(ctx context.Context, req StartNewCtrReq) (
 		return nil, err
 	}
 
-	return container, nil
+	return r.InitContainerdCtr(ctx, container)
 }
 
 // NOTE by huang-jl: this is different from switch start
 // it only use the containerd's C/R interface to start new task
-func (r CtrRuntime) criuLazyStartInstance(ctx context.Context, req StartNewCtrReq) (containerd.Container, error) {
+func (r CtrRuntime) criuLazyStartInstance(ctx context.Context, req StartNewCtrReq) (Ctr, error) {
 	instanceID := GetInstanceID(req.Service, req.id)
 	crlogger.Debug().Str("instance", instanceID).Msg("criu lazy start")
 	snapshotter := ""
@@ -357,10 +356,10 @@ func (r CtrRuntime) criuLazyStartInstance(ctx context.Context, req StartNewCtrRe
 		return nil, err
 	}
 
-	return container, nil
+	return r.InitContainerdCtr(ctx, container)
 }
 
-func (r CtrRuntime) coldStartInstance(ctx context.Context, req StartNewCtrReq) (containerd.Container, error) {
+func (r CtrRuntime) coldStartInstance(ctx context.Context, req StartNewCtrReq) (Ctr, error) {
 	instanceID := GetInstanceID(req.Service, req.id)
 	crlogger.Debug().Str("instance", instanceID).Msg("traditional cold start")
 	snapshotter := ""
@@ -447,11 +446,10 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req StartNewCtrReq) (
 		return nil, err
 	}
 
-	return container, nil
+	return r.InitContainerdCtr(ctx, container)
 }
 
-// generate CtrInstance from containerd.Container
-func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Container, req StartNewCtrReq) (*CtrInstance, error) {
+func (r CtrRuntime) InitContainerdCtr(ctx context.Context, ctr containerd.Container) (*ContainerdCtr, error) {
 	task, err := ctr.Task(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -482,73 +480,61 @@ func (r CtrRuntime) InitCtrInstance(ctx context.Context, ctr containerd.Containe
 
 	cniID := cninetwork.NetID(task)
 
+	return &ContainerdCtr{
+		Pid:           int(pid),
+		rootfs:        &rootOverlay,
+		IpAddress:     ip,
+		cniID:         cniID,
+		originalCtrID: name,
+		fsManager:     r.rootfsManager,
+		cni:           r.cni,
+		client:        r.Client,
+	}, nil
+}
+
+// generate CtrInstance from containerd.Container
+func (r CtrRuntime) InitCtrInstance(ctr Ctr, req StartNewCtrReq) *CtrInstance {
 	return &CtrInstance{
+		Ctr:            ctr,
 		ServiceName:    req.Service,
 		ID:             req.id,
-		Pid:            int(pid),
-		rootfs:         &rootOverlay,
-		IpAddress:      ip,
-		cniID:          cniID,
 		status:         IDLE,
 		depolyDecision: req.decision,
-		originalCtrID:  name,
 		lastActive:     time.Now(),
 		localPQIndex:   -1,
 		globalPQIndex:  -1,
-	}, nil
+	}
 }
 
 // By huang-jl: CRIU will restore the property of cgroup, we do not need to care about that here.
 func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candidate *CtrInstance) (*CtrInstance, error) {
-	var (
-		err        error
-		appOverlay *OverlayInfo
-	)
 
 	if len(req.Secrets) > 0 {
 		return nil, fmt.Errorf("switch do not support secrets for now")
 	}
 	serviceName := req.Service
-
-	start := time.Now()
-	appOverlay, err = r.rootfsManager.PrepareSwitchRootfs(serviceName, candidate)
-	if err != nil {
-		return nil, err
-	}
-	if err = metrics.GetMetricLogger().Emit(pkg.PrepareSwitchFSLatency, ServiceName2LambdaName(serviceName), time.Since(start)); err != nil {
-		crlogger.Error().Err(err).Msg("emit PrepareSwitchFSLatency metric failed")
-	}
-
 	// TODO(huang-jl) change the work directory structure ?
 	config := switcher.SwitcherConfig{
-		CRIUWorkDirectory: path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
-		CRIULogFileName:   "restore.log",
+		TargetServiceName: serviceName,
+		CRImageDir:        path.Join(r.checkpointCache.checkpointDir, serviceName),
+		CRWorkDir:         path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
+		CRLogFileName:     "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRIULogLevel: 0,
+		CRLogLevel:   4,
+		CandidatePID: candidate.GetPid(),
 	}
-	start = time.Now()
-	switcher, err := switcher.SwitchFor(serviceName, r.checkpointCache.checkpointDir,
-		int(candidate.Pid), config)
-	crlogger.Debug().Str("service name", serviceName).Dur("overhead", time.Since(start)).Msg("SwitchFor")
-	if err != nil {
-		return nil, errors.Wrapf(err, "switch from %s to %s failed", candidate.ServiceName, serviceName)
+
+	if err := candidate.Switch(config); err != nil {
+		return nil, errors.Errorf("switch from %s to %s failed: %v", candidate.ServiceName, serviceName, err)
 	}
-	newPid := switcher.PID()
-	if newPid <= 0 {
-		return nil, fmt.Errorf("switchDeploy get wierd process id %d", newPid)
-	}
+	newPid := candidate.GetPid()
 	// reap the child
 	r.reapCh <- newPid
 
-	if appOverlay == nil {
-		return nil, fmt.Errorf("appOverlay is null when switch deploy!\n")
-	}
-
+	// candidate.Ctr has already updated by candidate.Switch()
 	newInstance := candidate
 	newInstance.ServiceName = serviceName
 	newInstance.ID = id
-	newInstance.Pid = newPid
-	newInstance.appOverlay = appOverlay
 	newInstance.depolyDecision = SWITCH
 	newInstance.localPQIndex = -1
 	newInstance.globalPQIndex = -1
@@ -842,25 +828,6 @@ func getOSMounts() []specs.Mount {
 }
 
 func (r CtrRuntime) KillInstance(ctrInstance *CtrInstance) error {
-	pid := ctrInstance.Pid
-	// remove cni network first (it needs network ns)
-	err := r.cni.Remove(context.Background(), ctrInstance.cniID,
-		fmt.Sprintf("/proc/%d/ns/net", pid))
-	if err != nil {
-		return errors.Wrapf(err, "remove cni network for %s failed\n", ctrInstance.cniID)
-	}
-	// kill process
-	err = syscall.Kill(pid, syscall.SIGKILL)
-	if err != nil {
-		return errors.Wrapf(err, "kill process %d failed\n", pid)
-	}
-	// umount app overlay (so that remove ctr from container will succeed)
-	r.rootfsManager.recyleAppOverlay(ctrInstance)
-	// remove from containerd
 	ctrInstance.status = INVALID
-	ctx := namespaces.WithNamespace(context.Background(), pkg.DefaultFunctionNamespace)
-	if err = service.Remove(ctx, r.Client, ctrInstance.originalCtrID); err != nil {
-		return err
-	}
-	return nil
+	return ctrInstance.Kill()
 }

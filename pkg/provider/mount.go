@@ -28,9 +28,14 @@ type OverlayInfo struct {
 	merged string
 }
 
+type AppOverlayInfo struct {
+	OverlayInfo
+	serviceName string
+}
+
 type AppOverlayCache struct {
 	// serviceName -> IDLE app overlays
-	data []*OverlayInfo
+	data []*AppOverlayInfo
 	id   atomic.Uint64
 }
 
@@ -137,10 +142,10 @@ func (m *RootfsManager) RegisterService(serviceName string) error {
 }
 
 // TODO(huang-jl) clear app overlay's writable layer
-func (m *RootfsManager) putAppOverlayToCache(serviceName string, info *OverlayInfo) {
+func (m *RootfsManager) putAppOverlayToCache(info *AppOverlayInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.cache[serviceName].data = append(m.cache[serviceName].data, info)
+	m.cache[info.serviceName].data = append(m.cache[info.serviceName].data, info)
 	// start := time.Now()
 	// items, err := os.ReadDir(oldInfo.rootfs.upper)
 	// if err != nil {
@@ -159,8 +164,8 @@ func (m *RootfsManager) putAppOverlayToCache(serviceName string, info *OverlayIn
 }
 
 // Returned *OverlayInfo is nil which means there is no entry in cache
-func (m *RootfsManager) getAppOverlayFromCache(serviceName string) (*OverlayInfo, error) {
-	var res *OverlayInfo
+func (m *RootfsManager) getAppOverlayFromCache(serviceName string) (*AppOverlayInfo, error) {
+	var res *AppOverlayInfo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	appOverlays, exist := m.cache[serviceName]
@@ -177,19 +182,19 @@ func (m *RootfsManager) getAppOverlayFromCache(serviceName string) (*OverlayInfo
 }
 
 // umount app overlay and put it into app overlay cache
-func (m *RootfsManager) recyleAppOverlay(ctrInstance *CtrInstance) {
-	if ctrInstance.appOverlay == nil {
+func (m *RootfsManager) recyleAppOverlay(ctr *ContainerdCtr) {
+	if ctr.appOverlay == nil {
 		return
 	}
-	targetBindPath := path.Join(ctrInstance.rootfs.merged, "home/app")
+	targetBindPath := path.Join(ctr.rootfs.merged, "home/app")
 	unix.Unmount(targetBindPath, unix.MNT_DETACH) // [0.2ms]
-	m.putAppOverlayToCache(ctrInstance.ServiceName, ctrInstance.appOverlay)
-	ctrInstance.appOverlay = nil
+	m.putAppOverlayToCache(ctr.appOverlay)
+	ctr.appOverlay = nil
 }
 
 // I choose one goroutine to do fill overlaycache job
 func (m *RootfsManager) fillAppOverlayCache(serviceName string, num int) error {
-	appOverlays := make([]*OverlayInfo, num)
+	appOverlays := make([]*AppOverlayInfo, num)
 	// Do not hold lock while prepare overlay
 	for i := 0; i < num; i++ {
 		appOverlay, err := m.PrepareAppOverlay(serviceName, false)
@@ -224,8 +229,8 @@ func (m *RootfsManager) lookupPkg(serviceName string) (string, error) {
 // Prepare the app overlay, including mkdir for upperdir and workdir
 //
 // Return the mounted path of app dir overlay
-func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*OverlayInfo, error) {
-	var res *OverlayInfo
+func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*AppOverlayInfo, error) {
+	var res *AppOverlayInfo
 	start := time.Now()
 	pkgPath, err := m.lookupPkg(serviceName)
 	if err != nil {
@@ -260,11 +265,13 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 		rmlogger.Debug().Str("service name", serviceName).Dur("mount app overlay", time.Since(start)).Send()
 	}
 	// return the app overlay
-	res = &OverlayInfo{
-		upper:  upperdir,
-		work:   workdir,
-		merged: mergedir,
-		lower:  pkgPath,
+	res = &AppOverlayInfo{
+		OverlayInfo{
+			upper:  upperdir,
+			work:   workdir,
+			merged: mergedir,
+			lower:  pkgPath,
+		}, serviceName,
 	}
 	return res, nil
 }
@@ -285,10 +292,10 @@ func (m *RootfsManager) PrepareAppOverlay(serviceName string, showLog bool) (*Ov
 // I find this method sometimes can cause about 10ms overhead.
 // However, even using overlay pool, a single bind mount sometimes can
 // spend about 10ms in qemu.
-func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldInfo *CtrInstance) (*OverlayInfo, error) {
+func (m *RootfsManager) PrepareSwitchRootfs(serviceName string, oldCtr *ContainerdCtr) (*AppOverlayInfo, error) {
 	start := time.Now()
-	targetBindPath := path.Join(oldInfo.rootfs.merged, "home/app")
-	m.recyleAppOverlay(oldInfo)
+	targetBindPath := path.Join(oldCtr.rootfs.merged, "home/app")
+	m.recyleAppOverlay(oldCtr)
 	rmlogger.Debug().Str("service name", serviceName).Dur("unmount old app overlay", time.Since(start)).Send()
 
 	start = time.Now()

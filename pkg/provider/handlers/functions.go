@@ -53,8 +53,8 @@ func ListFunctions(m *provider.LambdaManager, namespace string) (map[string]*Fun
 		f := Function{
 			name:      name,
 			namespace: faasd.DefaultFunctionNamespace,
-			pid:       uint32(c.Pid),
-			IP:        c.IpAddress,
+			pid:       uint32(c.GetPid()),
+			IP:        c.GetIpAddress(),
 		}
 		if err != nil {
 			log.Printf("skipping %s, error: %s", name, err)

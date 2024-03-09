@@ -139,7 +139,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 	if err := cmd.Start(); err != nil {
 		return errors.Wrap(err, "criu cmd Start()")
 	}
-	err = metrics.GetMetricLogger().Emit(pkg.CRIUSwrkCmdStartMetric, switcher.checkpoint, time.Since(start))
+	err = metrics.GetMetricLogger().Emit(pkg.CRIUSwrkCmdStartMetric, switcher.config.TargetServiceName, time.Since(start))
 	if err != nil {
 		return err
 	}

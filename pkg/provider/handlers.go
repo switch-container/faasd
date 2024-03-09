@@ -169,7 +169,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	if !ok {
 		port = watchdogPort
 	}
-	urlStr := fmt.Sprintf("http://%s:%s", instance.IpAddress, port)
+	urlStr := fmt.Sprintf("http://%s:%s", instance.GetIpAddress(), port)
 	serviceAddr, err := url.Parse(urlStr)
 	if err != nil {
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to parse url for %s: %s", serviceName, err)

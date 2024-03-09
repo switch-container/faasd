@@ -30,16 +30,14 @@ type Process struct {
 
 type Switcher struct {
 	// refer to the criu process
-	process       *Process
-	checkpoint    string
-	checkpointDir string
-	config        SwitcherConfig
+	process *Process
+	config  SwitcherConfig
 }
 
 func (switcher *Switcher) switchCriuOptions() *CriuOpts {
 	return &CriuOpts{
-		ImagesDirectory:         filepath.Join(switcher.checkpointDir, switcher.checkpoint),
-		WorkDirectory:           switcher.config.CRIUWorkDirectory,
+		ImagesDirectory:         switcher.config.CRImageDir,
+		WorkDirectory:           switcher.config.CRWorkDir,
 		ParentImage:             "",
 		LeaveRunning:            false,
 		TcpEstablished:          false,
@@ -63,8 +61,10 @@ func (switcher *Switcher) PID() int {
 }
 
 // - pid: original process id in container
-func (switcher *Switcher) doSwitch(pid int) error {
+func (switcher *Switcher) doSwitch() error {
+	lambdaName := switcher.config.TargetServiceName
 	criuOpts := switcher.switchCriuOptions()
+	pid := switcher.config.CandidatePID
 
 	imageDir, err := os.Open(criuOpts.ImagesDirectory)
 	if err != nil {
@@ -75,8 +75,8 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	rpcOpts := &criurpc.CriuOpts{
 		ImagesDirFd:    proto.Int32(int32(imageDir.Fd())),
 		EvasiveDevices: proto.Bool(true),
-		LogLevel:       proto.Int32(int32(switcher.config.CRIULogLevel)),
-		LogFile:        proto.String(switcher.config.CRIULogFileName),
+		LogLevel:       proto.Int32(int32(switcher.config.CRLogLevel)),
+		LogFile:        proto.String(switcher.config.CRLogFileName),
 		RstSibling:     proto.Bool(true),
 		// Root:            proto.String(root),
 		ManageCgroups:  proto.Bool(true),
@@ -112,7 +112,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 			fd.Close()
 		}
 		swlogger.Debug().Dur("overhead", time.Since(start)).
-			Str("lambda name", switcher.checkpoint).Msg("close fd for criu switch")
+			Str("lambda name", lambdaName).Msg("close fd for criu switch")
 	}()
 
 	start := time.Now()
@@ -122,7 +122,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	}
 	// metrics.GetMetricLogger().Emit(pkg.CRIUHandleNsMetric, switcher.checkpoint, time.Since(start))
 	swlogger.Debug().Dur("overhead", time.Since(start)).
-		Str("lambda name", switcher.checkpoint).Msg("handle switch namespace")
+		Str("lambda name", lambdaName).Msg("handle switch namespace")
 
 	start = time.Now()
 	// [10us]
@@ -130,7 +130,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		return errors.Wrap(err, "handle pseudo mm drv failed")
 	}
 	swlogger.Debug().Dur("overhead", time.Since(start)).
-		Str("lambda name", switcher.checkpoint).Msg("handle pseudo mm drv")
+		Str("lambda name", lambdaName).Msg("handle pseudo mm drv")
 
 	start = time.Now()
 	// [50us]
@@ -141,7 +141,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		defer criuOpts.CgroupFile.Close()
 	}
 	swlogger.Debug().Dur("overhead", time.Since(start)).
-		Str("lambda name", switcher.checkpoint).Msg("apply cgroup")
+		Str("lambda name", lambdaName).Msg("apply cgroup")
 
 	// TODO(huang-jl) kill process in another goroutine (async)
 	// kill process sometimes takes about 4ms - 5ms.
@@ -153,7 +153,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 	if err = syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		return errors.Wrapf(err, "kill original process %d failed", pid)
 	}
-	err = metrics.GetMetricLogger().Emit(pkg.SwitchKillMetric, switcher.checkpoint, time.Since(start))
+	err = metrics.GetMetricLogger().Emit(pkg.SwitchKillMetric, lambdaName, time.Since(start))
 	if err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func (switcher *Switcher) doSwitch(pid int) error {
 		return errors.Wrapf(err, "criuSwrk failed")
 	}
 
-	return metrics.GetMetricLogger().Emit(pkg.CRIUSwrkLatencyMetric, switcher.checkpoint, time.Since(start))
+	return metrics.GetMetricLogger().Emit(pkg.CRIUSwrkLatencyMetric, lambdaName, time.Since(start))
 }
 
 func getNsPath(pid int, ns string) string {
@@ -305,17 +305,15 @@ func getPidOfContainer(client *containerd.Client, containerID string) (int, cont
 // checkpoint: the name of image directory of the target container
 // checkpointDir: the upper-level directory which containers all function's checkpoint image
 // pid: the init pid of original container
-func SwitchFor(checkpoint, checkpointDir string, pid int, config SwitcherConfig) (*Switcher, error) {
+func SwitchFor(config SwitcherConfig) (*Switcher, error) {
 	// pid, ctr, err := lambda.getPidOfContainer(switchReq.ContainerID)
 
 	switcher := &Switcher{
-		process:       &Process{},
-		checkpoint:    checkpoint,
-		checkpointDir: checkpointDir,
-		config:        config,
+		process: &Process{},
+		config:  config,
 	}
 
-	if err := switcher.doSwitch(pid); err != nil {
+	if err := switcher.doSwitch(); err != nil {
 		return nil, err
 	}
 	return switcher, nil

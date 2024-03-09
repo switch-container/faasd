@@ -2,12 +2,21 @@ package provider
 
 import (
 	"container/heap"
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
+	"github.com/openfaas/faasd/pkg"
+	"github.com/openfaas/faasd/pkg/metrics"
+	"github.com/openfaas/faasd/pkg/provider/switcher"
+	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -117,20 +126,102 @@ func (pool *CtrPool) RemoveFromFree(instance *CtrInstance) error {
 	return nil
 }
 
-type CtrInstance struct {
-	ServiceName    string // key in LambdaManager
-	ID             uint64 // key in CtrPool
-	Pid            int    // init process id in Container
-	status         ContainerStatus
-	IpAddress      string
-	rootfs         *OverlayInfo // do not need contains lowerdirs since it is large but useless for now
-	cniID          string       // which used for removing network resources
-	appOverlay     *OverlayInfo
-	lastActive     time.Time
-	depolyDecision DeployDecision // the depoly decision that created these instance
-	originalCtrID  string         // the original container ID
+type Ctr interface {
+	GetPid() int
+	GetIpAddress() string
+	Kill() error
+	Switch(config switcher.SwitcherConfig) error
+}
+
+type ContainerdCtr struct {
+	Pid           int // init process id in Container
+	IpAddress     string
+	rootfs        *OverlayInfo    // do not need contains lowerdirs since it is large but useless for now
+	cniID         string          // which used for removing network resources
+	appOverlay    *AppOverlayInfo // only switched container have appOverlay
+	originalCtrID string          // the original container ID
 	// e.g., pyase-5 which switch from hello-world-5, the original container ID is hello-world-5
 	// the originalCtrID is used for removing resources in containerd
+
+	fsManager *RootfsManager
+	cni       cni.CNI
+	client    *containerd.Client
+}
+
+func (ctr *ContainerdCtr) GetPid() int {
+	return ctr.Pid
+}
+
+func (ctr *ContainerdCtr) GetIpAddress() string {
+	return ctr.IpAddress
+}
+
+func (ctr *ContainerdCtr) Kill() error {
+	pid := ctr.Pid
+	// remove cni network first (it needs network ns)
+	err := ctr.cni.Remove(context.Background(), ctr.cniID,
+		fmt.Sprintf("/proc/%d/ns/net", pid))
+	if err != nil {
+		return errors.Wrapf(err, "remove cni network for %s failed\n", ctr.cniID)
+	}
+	// kill process
+	err = syscall.Kill(pid, syscall.SIGKILL)
+	if err != nil {
+		return errors.Wrapf(err, "kill process %d failed\n", pid)
+	}
+	// umount app overlay (so that remove ctr from container will succeed)
+	ctr.fsManager.recyleAppOverlay(ctr)
+	// remove from containerd
+	ctx := namespaces.WithNamespace(context.Background(), pkg.DefaultFunctionNamespace)
+	if err = service.Remove(ctx, ctr.client, ctr.originalCtrID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ctr *ContainerdCtr) Switch(config switcher.SwitcherConfig) error {
+	var (
+		err        error
+		appOverlay *AppOverlayInfo
+	)
+	start := time.Now()
+	appOverlay, err = ctr.fsManager.PrepareSwitchRootfs(config.TargetServiceName, ctr)
+	if err != nil {
+		return err
+	}
+	if err = metrics.GetMetricLogger().Emit(pkg.PrepareSwitchFSLatency,
+		ServiceName2LambdaName(config.TargetServiceName), time.Since(start)); err != nil {
+		crlogger.Error().Err(err).Msg("emit PrepareSwitchFSLatency metric failed")
+	}
+
+	start = time.Now()
+	switcher, err := switcher.SwitchFor(config)
+	crlogger.Debug().Str("service name", config.TargetServiceName).
+		Dur("overhead", time.Since(start)).Msg("SwitchFor")
+	if err != nil {
+		return err
+	}
+	newPid := switcher.PID()
+	if newPid <= 0 {
+		return fmt.Errorf("switchDeploy get wierd process id %d", newPid)
+	}
+
+	if appOverlay == nil {
+		return fmt.Errorf("appOverlay is null when switch deploy!\n")
+	}
+	// update info
+	ctr.Pid = newPid
+	ctr.appOverlay = appOverlay
+	return nil
+}
+
+type CtrInstance struct {
+	Ctr
+	ServiceName    string // key in LambdaManager
+	ID             uint64 // key in CtrPool
+	status         ContainerStatus
+	lastActive     time.Time
+	depolyDecision DeployDecision // the depoly decision that created these instance
 
 	// This is used for global priority queue
 	globalPQIndex int
