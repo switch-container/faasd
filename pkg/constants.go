@@ -34,7 +34,8 @@ const (
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
 
 	// NOTE by huang-jl: only the following params need be tuned
-	DaxDevicePath = "/dev/dax0.1"
+	DefaultDaxDevicePath = "/dev/dax0.1"
+	DefaultRDMABufSockPath = "/run/pseudo-mm-rdma-server-buf.sock"
 
 	// default checkpoint image directory
 	FaasdCheckpointDirPrefix = "/var/lib/faasd/checkpoints/images"

@@ -27,9 +27,15 @@ type checkpointConfig struct {
 	// sock address of containerd
 	containerdAddr string
 	// namespace of container in containerd
-	namespace   string
-	pgoff       int
-	pseudoMMDrv *os.File
+	namespace       string
+	pseudoMMDrv     *os.File
+	daxDevPath      string
+	rdmaBufSockAddr string
+
+	daxPgoff  int
+	rdmaPgoff int
+
+	memPool string
 }
 
 // checkpoint info that specific to one container
@@ -122,9 +128,28 @@ func parseCheckpointConfig(cmd *cobra.Command) (*checkpointConfig, error) {
 		log.Error().Err(err).Msg("cannot open /dev/pseudo_mm (%s), are you using our linux kernel ?")
 		return parsed, err
 	}
-	pgoff, err := cmd.Flags().GetInt("pgoff")
+	daxDevPath, err := cmd.Flags().GetString("dax-device")
 	if err != nil {
-		return parsed, errors.Wrap(err, "can not parse pgoff flag")
+		return parsed, errors.Wrap(err, "can not parse dax-device flag")
+	}
+	daxPgoff, err := cmd.Flags().GetInt("dax-pgoff")
+	if err != nil {
+		return parsed, errors.Wrap(err, "can not parse dax-pgoff flag")
+	}
+	rdmaBufSockAddr, err := cmd.Flags().GetString("rdma-buf-sock-path")
+	if err != nil {
+		return parsed, errors.Wrap(err, "can not parse rdma-buf-sock-path flag")
+	}
+	rdmaPgoff, err := cmd.Flags().GetInt("rdma-pgoff")
+	if err != nil {
+		return parsed, errors.Wrap(err, "can not parse rdma-pgoff flag")
+	}
+	memPoolType, err := cmd.Flags().GetString("mem-pool")
+	if err != nil {
+		return parsed, errors.Wrap(err, "can not parse mem-pool flag")
+	}
+	if memPoolType != "dax" && memPoolType != "rdma" {
+		return parsed, errors.Errorf("mem-pool only support rdma and dax, get %s", memPoolType)
 	}
 
 	if len(checkpointDir) == 0 || len(workDir) == 0 || len(namespace) == 0 ||
@@ -133,11 +158,15 @@ func parseCheckpointConfig(cmd *cobra.Command) (*checkpointConfig, error) {
 	}
 
 	parsed = &checkpointConfig{
-		globalWorkDir:  workDir,
-		containerdAddr: containerdAddr,
-		namespace:      namespace,
-		pgoff:          pgoff,
-		pseudoMMDrv:    pseudoMMDrvFile,
+		globalWorkDir:   workDir,
+		containerdAddr:  containerdAddr,
+		namespace:       namespace,
+		pseudoMMDrv:     pseudoMMDrvFile,
+		daxDevPath:      daxDevPath,
+		daxPgoff:        daxPgoff,
+		rdmaBufSockAddr: rdmaBufSockAddr,
+		rdmaPgoff:       rdmaPgoff,
+		memPool:         memPoolType,
 	}
 	return parsed, nil
 }
@@ -155,7 +184,11 @@ func init() {
 	flags.String("work-dir", pkg.FaasdCRIUCheckpointWorkPrefix, "work dir of CRIU (e.g., log path)")
 	flags.String("containerd-sock", "/run/containerd/containerd.sock", "sock address of containerd daemon")
 	flags.String("namespace", faasd.DefaultFunctionNamespace, "namespace of the target container in containerd")
-	flags.Int("pgoff", 0, "page offset on dax device to place the image (e.g., 16 means 64K offset)")
+	flags.Int("dax-pgoff", 0, "page offset on dax device to place the image (e.g., 16 means 64K offset)")
+	flags.Int("rdma-pgoff", 0, "page offset on dax device to place the image (e.g., 16 means 64K offset)")
+	flags.String("rdma-buf-sock-path", pkg.DefaultRDMABufSockPath, "path to the rdma buf socket address")
+	flags.String("dax-device", pkg.DefaultDaxDevicePath, "path to the dax device used as memory pool")
+	flags.String("mem-pool", "", "memory pool type, currently only support dax and rdma")
 }
 
 func runCheckpoint(cmd *cobra.Command, args []string) error {
@@ -197,20 +230,20 @@ func runCheckpoint(cmd *cobra.Command, args []string) error {
 
 	// when we create all checkpoint, we start to convert them one by one
 	// NOTE: we follow the order in args
-	daxPgOff := config.pgoff
 	for _, ctrId := range args {
 		info := ckptInfos[ctrId]
 		// first convert checkpoint
 		// then we can get the dax page num
-		log.Info().Str("container id", ctrId).Int("dax pgoff", daxPgOff).Msg("start CONVERT checkpoint")
-		if err := convertOneCheckpoint(config, info, daxPgOff); err != nil {
+		log.Info().Str("container id", ctrId).Int("dax pgoff", config.daxPgoff).Int("rdma pgoff", config.rdmaPgoff).Msg("start CONVERT checkpoint")
+		if err := convertOneCheckpoint(config, info); err != nil {
 			return err
 		}
 		pageNum, err := getCkptDaxPageNum(info)
 		if err != nil {
 			return err
 		}
-		daxPgOff += pageNum
+		config.daxPgoff += pageNum
+		config.rdmaPgoff += pageNum
 	}
 
 	return nil
@@ -272,16 +305,18 @@ func getCheckpointOptions(rt string, info *checkpointInfo) containerd.Checkpoint
 	}
 }
 
-func getConvertArgs(info *checkpointInfo, daxPgOff int) []string {
+func getConvertArgs(config *checkpointConfig, info *checkpointInfo) []string {
 	args := []string{"convert"}
 	args = append(args, "-D", info.checkpointDir)
 	args = append(args, "-v4")
 	args = append(args, "-o", path.Join(info.workDir, "convert.log"))
-	args = append(args, "--dax-device", pkg.DaxDevicePath)
 	args = append(args, "--inherit-fd", "fd[3]:switch-ns-mnt")
 	args = append(args, "--inherit-fd", fmt.Sprintf("fd[4]:%s", pkg.CRIUPseudoMMDrvInheritID))
-	args = append(args, "--dax-pgoff", strconv.Itoa(daxPgOff))
-	// TODO(huang-jl) add offset on dax device argument of ciru-convert
+	args = append(args, "--dax-device", config.daxDevPath)
+	args = append(args, "--dax-pgoff", strconv.Itoa(config.daxPgoff))
+	args = append(args, "--rdma-buf-sock-path", config.rdmaBufSockAddr)
+	args = append(args, "--rdma-pgoff", strconv.Itoa(config.rdmaPgoff))
+	args = append(args, "--mem-pool", config.memPool)
 	return args
 }
 
@@ -309,9 +344,9 @@ func createOneCheckpoint(client *containerd.Client, config *checkpointConfig, in
 	return nil
 }
 
-func convertOneCheckpoint(config *checkpointConfig, info *checkpointInfo, daxPgOff int) error {
+func convertOneCheckpoint(config *checkpointConfig, info *checkpointInfo) error {
 	extraFiles := []*os.File{info.mntNsFile, config.pseudoMMDrv}
-	args := getConvertArgs(info, daxPgOff)
+	args := getConvertArgs(config, info)
 	cmd := exec.Command("criu", args...)
 	cmd.ExtraFiles = extraFiles
 
