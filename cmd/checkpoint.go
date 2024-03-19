@@ -312,11 +312,17 @@ func getConvertArgs(config *checkpointConfig, info *checkpointInfo) []string {
 	args = append(args, "-o", path.Join(info.workDir, "convert.log"))
 	args = append(args, "--inherit-fd", "fd[3]:switch-ns-mnt")
 	args = append(args, "--inherit-fd", fmt.Sprintf("fd[4]:%s", pkg.CRIUPseudoMMDrvInheritID))
-	args = append(args, "--dax-device", config.daxDevPath)
-	args = append(args, "--dax-pgoff", strconv.Itoa(config.daxPgoff))
-	args = append(args, "--rdma-buf-sock-path", config.rdmaBufSockAddr)
-	args = append(args, "--rdma-pgoff", strconv.Itoa(config.rdmaPgoff))
 	args = append(args, "--mem-pool", config.memPool)
+	switch config.memPool {
+	case "rdma":
+		args = append(args, "--rdma-buf-sock-path", config.rdmaBufSockAddr)
+		args = append(args, "--rdma-pgoff", strconv.Itoa(config.rdmaPgoff))
+	case "dax":
+		args = append(args, "--dax-device", config.daxDevPath)
+		args = append(args, "--dax-pgoff", strconv.Itoa(config.daxPgoff))
+	default:
+		panic(fmt.Sprintf("unsupport mem-pool %s", config.memPool))
+	}
 	return args
 }
 
