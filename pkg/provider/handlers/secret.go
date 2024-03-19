@@ -9,9 +9,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/rs/zerolog/log"
 	"github.com/openfaas/faas-provider/types"
 	provider "github.com/openfaas/faasd/pkg/provider"
+	"github.com/rs/zerolog/log"
 )
 
 const secretFilePermission = 0644

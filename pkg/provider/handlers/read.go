@@ -6,9 +6,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/rs/zerolog/log"
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg/provider"
+	"github.com/rs/zerolog/log"
 )
 
 func MakeReadHandler(m *provider.LambdaManager) func(w http.ResponseWriter, r *http.Request) {

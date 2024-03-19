@@ -42,6 +42,9 @@ type FunctionDeployment struct {
 	// ReadOnlyRootFilesystem removes write-access from the root filesystem
 	// mount-point.
 	ReadOnlyRootFilesystem bool `json:"readOnlyRootFilesystem,omitempty"`
+
+	// SnapshotIds is the ID of the snapshots to be used for the function in Faasnap
+	SnapshotIds []string
 }
 
 // FunctionResources Memory and CPU
