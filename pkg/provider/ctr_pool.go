@@ -215,6 +215,28 @@ func (ctr *ContainerdCtr) Switch(config switcher.SwitcherConfig) error {
 	return nil
 }
 
+type FaasnapCtr struct {
+	Pid       int // init process id in Container
+	IpAddress string
+}
+
+func (ctr *FaasnapCtr) GetPid() int {
+	return ctr.Pid
+}
+
+func (ctr *FaasnapCtr) GetIpAddress() string {
+	return ctr.IpAddress
+}
+
+func (ctr *FaasnapCtr) Kill() error {
+	// TODO(sixing lin): implement kill for faasnap
+	return errors.New("not implemented")
+}
+
+func (ctr *FaasnapCtr) Switch(config switcher.SwitcherConfig) error {
+	return errors.New("not implemented")
+}
+
 type CtrInstance struct {
 	Ctr
 	ServiceName    string // key in LambdaManager

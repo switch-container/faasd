@@ -34,6 +34,7 @@ const (
 	COLD_START DeployDecision = iota
 	CR_START
 	CR_LAZY_START
+	FAASNAP_START
 	REUSE
 	SWITCH
 )
@@ -169,6 +170,8 @@ func NewBaselinePolicy(defaultStartMethod string) (BaselinePolicy, error) {
 		decision = CR_START
 	case "lazy":
 		decision = CR_LAZY_START
+	case "faasnap":
+		decision = FAASNAP_START
 	default:
 		return BaselinePolicy{}, errors.Errorf("invalid default start method for baseline: %v", defaultStartMethod)
 	}

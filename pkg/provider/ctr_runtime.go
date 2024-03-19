@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antihax/optional"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/containers"
@@ -27,6 +28,7 @@ import (
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	"github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -168,6 +170,8 @@ func (r CtrRuntime) startNewCtr(req StartNewCtrReq) (*CtrInstance, error) {
 		ctr, err = r.criuStartInstance(ctx, req)
 	case CR_LAZY_START:
 		ctr, err = r.criuLazyStartInstance(ctx, req)
+	case FAASNAP_START:
+		ctr, err = r.faasnapStartInstance(ctx, req)
 	default:
 		return nil, errors.Errorf("invalid decision: %v", req.decision)
 	}
@@ -447,6 +451,53 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req StartNewCtrReq) (
 	}
 
 	return r.InitContainerdCtr(ctx, container)
+}
+
+func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq) (Ctr, error) {
+	client := swagger.NewAPIClient(swagger.NewConfiguration())
+	api := client.DefaultApi
+
+	snapshotId := req.SnapshotIds[0]
+	invocation := swagger.Invocation{
+		FuncName:       req.Service,
+		SsId:           snapshotId,
+		EnableReap:     false,
+		Namespace:      fmt.Sprintf("fc%d", 1), // TODO: choose a namespace
+		UseMemFile:     false,
+		OverlayRegions: true,
+		UseWsFile:      true,
+	}
+	vm, _, err := api.SnapshotsSsIdPost(ctx, snapshotId, &swagger.DefaultApiSnapshotsSsIdPostOpts{
+		Body: optional.NewInterface(invocation),
+	})
+	if err != nil {
+		return nil, errors.Errorf("failed to load snapshot: %v", err)
+	}
+
+	//mcstate, _, err := api.SnapshotsSsIdMincoreGet(ctx, "id")
+	//if err != nil {
+	//	return nil, errors.Errorf("failed to get snapshot state: %v", err)
+	//}
+	//mincores := make([]int32, mcstate.Nlayers)
+	//for i := 0; i < int(mcstate.Nlayers); i++ {
+	//	mincores[i] = int32(i + 1)
+	//}
+	//
+	//result, _, err := api.InvocationsPost(ctx, &swagger.DefaultApiInvocationsPostOpts{
+	//	Body: optional.NewInterface(invocation),
+	//})
+	//if err != nil {
+	//	return nil, errors.Errorf("failed to invoke function: %v", err)
+	//}
+	//_, err = api.VmsVmIdDelete(ctx, result.VmId)
+	//if err != nil {
+	//	return nil, errors.Errorf("failed to delete vm after invocation: %v", err)
+	//}
+
+	return &FaasnapCtr{
+		Pid:       int(vm.Pid),
+		IpAddress: vm.Ip,
+	}, nil
 }
 
 func (r CtrRuntime) InitContainerdCtr(ctx context.Context, ctr containerd.Container) (*ContainerdCtr, error) {

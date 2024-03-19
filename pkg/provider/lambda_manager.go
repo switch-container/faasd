@@ -8,12 +8,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/antihax/optional"
 	"github.com/containerd/containerd"
 	gocni "github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	"github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger"
 )
 
 var lmlogger = log.With().
@@ -100,6 +102,162 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 
 func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 	serviceName := req.Service
+
+	switch p := m.policy.(type) {
+	case BaselinePolicy:
+		if p.defaultDecision != FAASNAP_START {
+			break
+		}
+		client := swagger.NewAPIClient(swagger.NewConfiguration())
+		api := client.DefaultApi
+		// register function for faasnap
+		function := swagger.Function{
+			FuncName: serviceName,
+			Image:    "debian",
+			Kernel:   "sanpage",
+			Vcpu:     4,
+		}
+		_, err := api.FunctionsPost(context.Background(), &swagger.DefaultApiFunctionsPostOpts{
+			Body: optional.NewInterface(function),
+		})
+		if err != nil {
+			return err
+		}
+
+		// prepare mincore
+		vms := swagger.VmsBody{
+			FuncName:  serviceName,
+			Namespace: "fc1",
+		}
+		vm, _, err := api.VmsPost(context.Background(), &swagger.DefaultApiVmsPostOpts{
+			Body: optional.NewInterface(vms),
+		})
+		if err != nil {
+			return err
+		}
+		time.Sleep(5 * time.Second)
+		snapshot := swagger.Snapshot{
+			VmId:         vm.VmId,
+			SnapshotType: "Full",
+			SnapshotPath: "Full.snapshot",
+			MemFilePath:  "Full.memfile",
+			Version:      "0.23.0",
+		}
+		baseSnapshot, _, err := api.SnapshotsPost(context.Background(), &swagger.DefaultApiSnapshotsPostOpts{
+			Body: optional.NewInterface(snapshot),
+		})
+		if err != nil {
+			return err
+		}
+		if _, err = api.VmsVmIdDelete(context.Background(), vm.VmId); err != nil {
+			return err
+		}
+		patchStateOptions := swagger.DefaultApiSnapshotsSsIdPatchOpts{
+			Body: optional.NewInterface(map[string]bool{
+				"dig_hole":   false,
+				"load_cache": false,
+				"drop_cache": true,
+			}),
+		}
+		if _, err = api.SnapshotsSsIdPatch(context.Background(), baseSnapshot.SsId, &patchStateOptions); err != nil {
+			return err
+		}
+		time.Sleep(2 * time.Second)
+		invocation := swagger.Invocation{
+			FuncName:    serviceName,
+			SsId:        baseSnapshot.SsId,
+			Mincore:     -1,
+			MincoreSize: 1024,
+			EnableReap:  false,
+			Namespace:   "fc1",
+			UseMemFile:  true,
+		}
+		result, _, err := api.InvocationsPost(context.Background(), &swagger.DefaultApiInvocationsPostOpts{
+			Body: optional.NewInterface(invocation),
+		})
+		if err != nil {
+			return err
+		}
+		newVmID := result.VmId
+		invocation = swagger.Invocation{
+			FuncName:   "run",
+			VmId:       newVmID,
+			Params:     "{\"args\":\"echo 8 > /proc/sys/vm/drop_caches\"}",
+			Mincore:    -1,
+			EnableReap: false,
+		}
+		_, _, err = api.InvocationsPost(context.Background(), &swagger.DefaultApiInvocationsPostOpts{
+			Body: optional.NewInterface(invocation),
+		})
+		if err != nil {
+			return err
+		}
+		snapshot = swagger.Snapshot{
+			VmId:              newVmID,
+			SnapshotType:      "Full",
+			SnapshotPath:      "Warm.snapshot",
+			MemFilePath:       "Warm.memfile",
+			Version:           "0.23.0",
+			RecordRegions:     true,
+			SizeThreshold:     0,
+			IntervalThreshold: 32,
+		}
+		warmSnapshot, _, err := api.SnapshotsPost(context.Background(), &swagger.DefaultApiSnapshotsPostOpts{
+			Body: optional.NewInterface(snapshot),
+		})
+		if err != nil {
+			return err
+		}
+		snapshots := []string{warmSnapshot.SsId}
+		if _, err = api.VmsVmIdDelete(context.Background(), newVmID); err != nil {
+			return err
+		}
+		time.Sleep(2 * time.Second)
+		_, err = api.SnapshotsSsIdMincorePut(context.Background(), warmSnapshot.SsId, &swagger.DefaultApiSnapshotsSsIdMincorePutOpts{
+			Source: optional.NewString(baseSnapshot.SsId),
+		})
+		if err != nil {
+			return err
+		}
+		_, err = api.SnapshotsSsIdMincorePatch(context.Background(), swagger.SsIdMincoreBody1{
+			TrimRegions:       false,
+			ToWsFile:          "",
+			InactiveWs:        false,
+			ZeroWs:            false,
+			SizeThreshold:     0,
+			IntervalThreshold: 32,
+			DropWsCache:       true,
+		}, warmSnapshot.SsId)
+		if err != nil {
+			return err
+		}
+		const parallel = 1
+		for i := 0; i < parallel-1; i++ {
+			memFilePath := fmt.Sprintf("Full.memfile.%d", i)
+			snapshot, _, err := api.SnapshotsPut(context.Background(), baseSnapshot.SsId, memFilePath)
+			if err != nil {
+				return err
+			}
+			snapshots = append(snapshots, snapshot.SsId)
+		}
+		if _, err = api.SnapshotsSsIdPatch(context.Background(), baseSnapshot.SsId, &patchStateOptions); err != nil {
+			return err
+		}
+		for _, snapshotId := range snapshots {
+			if _, err = api.SnapshotsSsIdPatch(context.Background(), snapshotId, &patchStateOptions); err != nil {
+				return err
+			}
+		}
+		_, err = api.SnapshotsSsIdMincorePatch(context.Background(), swagger.SsIdMincoreBody1{
+			DropWsCache: true,
+		}, warmSnapshot.SsId)
+
+		// save snapshot ids
+		req.SnapshotIds = snapshots
+	default:
+		break
+	}
+
 	// first register for app overlay cache
 	if err := m.Runtime.rootfsManager.RegisterService(serviceName); err != nil {
 		return err
