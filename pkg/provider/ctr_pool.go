@@ -2,6 +2,7 @@ package provider
 
 import (
 	"container/heap"
+	"container/list"
 	"context"
 	"fmt"
 	"sync"
@@ -220,6 +221,7 @@ type FaasnapCtr struct {
 	vmId      string
 	Pid       int
 	IpAddress string
+	network   *list.Element
 }
 
 func (ctr *FaasnapCtr) GetPid() int {
@@ -233,7 +235,14 @@ func (ctr *FaasnapCtr) GetIpAddress() string {
 func (ctr *FaasnapCtr) Kill() error {
 	client := swagger.NewAPIClient(swagger.NewConfiguration())
 	_, err := client.DefaultApi.VmsVmIdDelete(context.Background(), ctr.vmId)
-	return err
+	if err != nil {
+		return err
+	}
+	faasnapNetworkLock.Lock()
+	faasnapNetworksFree.PushBack(ctr.network)
+	faasnapNetworksUsed.Remove(ctr.network)
+	faasnapNetworkLock.Unlock()
+	return nil
 }
 
 func (ctr *FaasnapCtr) Switch(config switcher.SwitcherConfig) error {

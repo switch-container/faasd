@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"io"
@@ -457,12 +458,51 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	client := swagger.NewAPIClient(swagger.NewConfiguration())
 	api := client.DefaultApi
 
+	// find a free namespace
+	var namespace string
+	var namespaceElementPtr *list.Element
+	faasnapNetworkLock.Lock()
+	freeNetworkCount := faasnapNetworksFree.Len()
+	usedNetworkCount := faasnapNetworksUsed.Len()
+	if freeNetworkCount == 0 {
+		// no free network, check if the total number of networks is less than 100
+		totalNetworkCount := freeNetworkCount + usedNetworkCount
+		if totalNetworkCount >= 100 {
+			return nil, errors.New("no free faasnap network available")
+		}
+		// still have available network, create a new one
+		namespace = fmt.Sprintf("fc%d", totalNetworkCount+1)
+		newInterface := swagger.NetifacesNamespaceBody{
+			HostDevName: "vmtap0",
+			IfaceId:     "eth0",
+			GuestMac:    "AA:FC:00:00:00:01", // fixed MAC
+			GuestAddr:   "172.16.0.2",        // fixed IP
+			UniqueAddr:  fmt.Sprintf("192.168.0.%d", totalNetworkCount+3),
+		}
+		_, err := api.NetIfacesNamespacePut(ctx, namespace, &swagger.DefaultApiNetIfacesNamespacePutOpts{
+			Body: optional.NewInterface(newInterface),
+		})
+		if err != nil {
+			return nil, errors.Errorf("failed to create new network: %v", err)
+		}
+		faasnapNetworksUsed.PushBack(namespace)
+		namespaceElementPtr = faasnapNetworksUsed.Back()
+	} else {
+		// reuse a free network
+		e := faasnapNetworksFree.Front()
+		namespace = e.Value.(string)
+		faasnapNetworksFree.Remove(e)
+		faasnapNetworksUsed.PushBack(namespace)
+		namespaceElementPtr = faasnapNetworksUsed.Back()
+	}
+	faasnapNetworkLock.Unlock()
+
 	snapshotId := req.SnapshotIds[0]
 	invocation := swagger.Invocation{
 		FuncName:       req.Service,
 		SsId:           snapshotId,
 		EnableReap:     false,
-		Namespace:      fmt.Sprintf("fc%d", 1), // TODO: choose a namespace
+		Namespace:      namespace,
 		UseMemFile:     false,
 		OverlayRegions: true,
 		UseWsFile:      true,
@@ -474,30 +514,11 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 		return nil, errors.Errorf("failed to load snapshot: %v", err)
 	}
 
-	//mcstate, _, err := api.SnapshotsSsIdMincoreGet(ctx, "id")
-	//if err != nil {
-	//	return nil, errors.Errorf("failed to get snapshot state: %v", err)
-	//}
-	//mincores := make([]int32, mcstate.Nlayers)
-	//for i := 0; i < int(mcstate.Nlayers); i++ {
-	//	mincores[i] = int32(i + 1)
-	//}
-	//
-	//result, _, err := api.InvocationsPost(ctx, &swagger.DefaultApiInvocationsPostOpts{
-	//	Body: optional.NewInterface(invocation),
-	//})
-	//if err != nil {
-	//	return nil, errors.Errorf("failed to invoke function: %v", err)
-	//}
-	//_, err = api.VmsVmIdDelete(ctx, result.VmId)
-	//if err != nil {
-	//	return nil, errors.Errorf("failed to delete vm after invocation: %v", err)
-	//}
-
 	return &FaasnapCtr{
 		vmId:      vm.VmId,
 		Pid:       int(vm.Pid),
 		IpAddress: vm.Ip,
+		network:   namespaceElementPtr,
 	}, nil
 }
 
