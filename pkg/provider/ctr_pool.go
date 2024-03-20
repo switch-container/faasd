@@ -18,6 +18,7 @@ import (
 	"github.com/openfaas/faasd/pkg/provider/switcher"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
+	"github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -216,7 +217,8 @@ func (ctr *ContainerdCtr) Switch(config switcher.SwitcherConfig) error {
 }
 
 type FaasnapCtr struct {
-	Pid       int // init process id in Container
+	vmId      string
+	Pid       int
 	IpAddress string
 }
 
@@ -229,8 +231,9 @@ func (ctr *FaasnapCtr) GetIpAddress() string {
 }
 
 func (ctr *FaasnapCtr) Kill() error {
-	// TODO(sixing lin): implement kill for faasnap
-	return errors.New("not implemented")
+	client := swagger.NewAPIClient(swagger.NewConfiguration())
+	_, err := client.DefaultApi.VmsVmIdDelete(context.Background(), ctr.vmId)
+	return err
 }
 
 func (ctr *FaasnapCtr) Switch(config switcher.SwitcherConfig) error {

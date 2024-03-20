@@ -495,6 +495,7 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	//}
 
 	return &FaasnapCtr{
+		vmId:      vm.VmId,
 		Pid:       int(vm.Pid),
 		IpAddress: vm.Ip,
 	}, nil
