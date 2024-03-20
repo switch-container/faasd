@@ -95,12 +95,14 @@ require (
 
 require (
 	github.com/antihax/optional v1.0.0
-	github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger v0.0.0
+	github.com/switch-container/faasd/pkg/provider/faasnap v0.0.0
+	github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger v0.0.0
 )
 
 replace (
 	github.com/checkpoint-restore/go-criu/v5 => ../../checkpoint-restore/go-criu/
 	github.com/containerd/containerd => ../../containerd/containerd/
 	github.com/openfaas/faas-provider => ../faas-provider/
-	github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger => ./pkg/provider/api/faasnap/
+	github.com/switch-container/faasd/pkg/provider/faasnap => ./pkg/provider/faasnap/
+	github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger => ./pkg/provider/faasnap/api/
 )

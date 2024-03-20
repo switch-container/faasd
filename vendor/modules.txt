@@ -324,9 +324,12 @@ github.com/spf13/cobra
 # github.com/spf13/pflag v1.0.5
 ## explicit; go 1.12
 github.com/spf13/pflag
-# github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger v0.0.0 => ./pkg/provider/api/faasnap/
+# github.com/switch-container/faasd/pkg/provider/faasnap v0.0.0 => ./pkg/provider/faasnap/
 ## explicit; go 1.22.1
-github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger
+github.com/switch-container/faasd/pkg/provider/faasnap
+# github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger v0.0.0 => ./pkg/provider/faasnap/api/
+## explicit; go 1.22.1
+github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger
 # github.com/vishvananda/netlink v1.2.1-beta.2
 ## explicit; go 1.12
 github.com/vishvananda/netlink
@@ -523,4 +526,5 @@ k8s.io/apimachinery/pkg/api/resource
 # github.com/checkpoint-restore/go-criu/v5 => ../go-criu/
 # github.com/containerd/containerd => ../containerd/
 # github.com/openfaas/faas-provider => ../faas-provider/
-# github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger => ./pkg/provider/api/faasnap/
+# github.com/switch-container/faasd/pkg/provider/faasnap => ./pkg/provider/faasnap/
+# github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger => ./pkg/provider/faasnap/api/

@@ -170,7 +170,7 @@ func NewBaselinePolicy(defaultStartMethod string) (BaselinePolicy, error) {
 		decision = CR_START
 	case "lazy":
 		decision = CR_LAZY_START
-	case "faasnap":
+	case "api":
 		decision = FAASNAP_START
 	default:
 		return BaselinePolicy{}, errors.Errorf("invalid default start method for baseline: %v", defaultStartMethod)

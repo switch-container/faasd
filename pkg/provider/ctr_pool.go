@@ -19,7 +19,8 @@ import (
 	"github.com/openfaas/faasd/pkg/provider/switcher"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
-	"github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger"
+	"github.com/switch-container/faasd/pkg/provider/faasnap"
+	"github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -238,10 +239,10 @@ func (ctr *FaasnapCtr) Kill() error {
 	if err != nil {
 		return err
 	}
-	faasnapNetworkLock.Lock()
-	faasnapNetworksFree.PushBack(ctr.network)
-	faasnapNetworksUsed.Remove(ctr.network)
-	faasnapNetworkLock.Unlock()
+	faasnap.NetworkLock.Lock()
+	faasnap.NetworksFree.PushBack(ctr.network)
+	faasnap.NetworksUsed.Remove(ctr.network)
+	faasnap.NetworkLock.Unlock()
 	return nil
 }
 

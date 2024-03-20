@@ -29,7 +29,8 @@ import (
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-	"github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger"
+	"github.com/switch-container/faasd/pkg/provider/faasnap"
+	"github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -461,14 +462,14 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	// find a free namespace
 	var namespace string
 	var namespaceElementPtr *list.Element
-	faasnapNetworkLock.Lock()
-	freeNetworkCount := faasnapNetworksFree.Len()
-	usedNetworkCount := faasnapNetworksUsed.Len()
+	faasnap.NetworkLock.Lock()
+	freeNetworkCount := faasnap.NetworksFree.Len()
+	usedNetworkCount := faasnap.NetworksUsed.Len()
 	if freeNetworkCount == 0 {
 		// no free network, check if the total number of networks is less than 100
 		totalNetworkCount := freeNetworkCount + usedNetworkCount
 		if totalNetworkCount >= 100 {
-			return nil, errors.New("no free faasnap network available")
+			return nil, errors.New("no free api network available")
 		}
 		// still have available network, create a new one
 		namespace = fmt.Sprintf("fc%d", totalNetworkCount+1)
@@ -485,17 +486,17 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 		if err != nil {
 			return nil, errors.Errorf("failed to create new network: %v", err)
 		}
-		faasnapNetworksUsed.PushBack(namespace)
-		namespaceElementPtr = faasnapNetworksUsed.Back()
+		faasnap.NetworksUsed.PushBack(namespace)
+		namespaceElementPtr = faasnap.NetworksUsed.Back()
 	} else {
 		// reuse a free network
-		e := faasnapNetworksFree.Front()
+		e := faasnap.NetworksFree.Front()
 		namespace = e.Value.(string)
-		faasnapNetworksFree.Remove(e)
-		faasnapNetworksUsed.PushBack(namespace)
-		namespaceElementPtr = faasnapNetworksUsed.Back()
+		faasnap.NetworksFree.Remove(e)
+		faasnap.NetworksUsed.PushBack(namespace)
+		namespaceElementPtr = faasnap.NetworksUsed.Back()
 	}
-	faasnapNetworkLock.Unlock()
+	faasnap.NetworkLock.Unlock()
 
 	snapshotId := req.SnapshotIds[0]
 	invocation := swagger.Invocation{

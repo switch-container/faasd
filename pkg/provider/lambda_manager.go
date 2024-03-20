@@ -15,7 +15,7 @@ import (
 	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-	"github.com/switch-container/faasd/pkg/provider/api/faasnap/swagger"
+	"github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger"
 )
 
 var lmlogger = log.With().
@@ -110,7 +110,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		}
 		client := swagger.NewAPIClient(swagger.NewConfiguration())
 		api := client.DefaultApi
-		// register function for faasnap
+		// register function for api
 		function := swagger.Function{
 			FuncName: serviceName,
 			Image:    "debian",
