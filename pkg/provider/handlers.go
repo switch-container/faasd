@@ -333,7 +333,16 @@ func MakeMetricHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.Req
 		switch r.Method {
 		case http.MethodGet:
 			response := metrics.GetMetricLogger().Output()
-			response += fmt.Sprintf("\nPeak memory usage: %d", m.memBound.peakUsed.Load())
+			entry := struct {
+				Label   string `json:"label"`
+				PeakMem int64  `json:"data"`
+			}{"peak-mem", m.memBound.peakUsed.Load()}
+			b, err := json.Marshal(entry)
+			if err != nil {
+				response += fmt.Sprintf("invalid memory bound: %s", err)
+			} else {
+				response += string(b)
+			}
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(response))

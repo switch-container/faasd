@@ -155,7 +155,7 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 		if errors.Is(err, ErrColdStartTooMuch) {
 			goto retry
 		} else if err != nil {
-			bglogger.Error().Err(err).Str("instance id", instance.GetInstanceID()).
+			bglogger.Err(err).Str("lambda", serviceName).
 				Msg("PopulateCtrBackgroundTask cold start failed")
 			break
 		}

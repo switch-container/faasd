@@ -16,6 +16,3 @@ When we call `CtrRuntime.Kill()`, we will pop the network from the used list and
 var NetworksUsed list.List
 var NetworksFree list.List
 var NetworkLock sync.Mutex
-
-type TestNetwork struct {
-}

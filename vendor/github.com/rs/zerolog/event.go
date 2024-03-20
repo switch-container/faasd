@@ -164,7 +164,7 @@ func (e *Event) Fields(fields interface{}) *Event {
 	if e == nil {
 		return e
 	}
-	e.buf = appendFields(e.buf, fields, e.stack)
+	e.buf = appendFields(e.buf, fields)
 	return e
 }
 

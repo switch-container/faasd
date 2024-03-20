@@ -12,13 +12,13 @@ func isNilValue(i interface{}) bool {
 	return (*[2]uintptr)(unsafe.Pointer(&i))[1] == 0
 }
 
-func appendFields(dst []byte, fields interface{}, stack bool) []byte {
+func appendFields(dst []byte, fields interface{}) []byte {
 	switch fields := fields.(type) {
 	case []interface{}:
 		if n := len(fields); n&0x1 == 1 { // odd number
 			fields = fields[:n-1]
 		}
-		dst = appendFieldList(dst, fields, stack)
+		dst = appendFieldList(dst, fields)
 	case map[string]interface{}:
 		keys := make([]string, 0, len(fields))
 		for key := range fields {
@@ -28,13 +28,13 @@ func appendFields(dst []byte, fields interface{}, stack bool) []byte {
 		kv := make([]interface{}, 2)
 		for _, key := range keys {
 			kv[0], kv[1] = key, fields[key]
-			dst = appendFieldList(dst, kv, stack)
+			dst = appendFieldList(dst, kv)
 		}
 	}
 	return dst
 }
 
-func appendFieldList(dst []byte, kvList []interface{}, stack bool) []byte {
+func appendFieldList(dst []byte, kvList []interface{}) []byte {
 	for i, n := 0, len(kvList); i < n; i += 2 {
 		key, val := kvList[i], kvList[i+1]
 		if key, ok := key.(string); ok {
@@ -73,21 +73,6 @@ func appendFieldList(dst []byte, kvList []interface{}, stack bool) []byte {
 				dst = enc.AppendString(dst, m)
 			default:
 				dst = enc.AppendInterface(dst, m)
-			}
-
-			if stack && ErrorStackMarshaler != nil {
-				dst = enc.AppendKey(dst, ErrorStackFieldName)
-				switch m := ErrorStackMarshaler(val).(type) {
-				case nil:
-				case error:
-					if m != nil && !isNilValue(m) {
-						dst = enc.AppendString(dst, m.Error())
-					}
-				case string:
-					dst = enc.AppendString(dst, m)
-				default:
-					dst = enc.AppendInterface(dst, m)
-				}
 			}
 		case []error:
 			dst = enc.AppendArrayStart(dst)
