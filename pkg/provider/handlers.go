@@ -165,11 +165,21 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	pool.PushIntoBusy(instance)
 
 	// resolve the container's http address
-	port, ok := pool.requirement.EnvVars["port"]
-	if !ok {
-		port = watchdogPort
+	var port string
+	switch p := m.policy.(type) {
+	case BaselinePolicy:
+		if p.defaultDecision == FAASNAP_START {
+			port = "5000"
+		}
+	default:
+		envPort, ok := pool.requirement.EnvVars["port"]
+		if ok {
+			port = envPort
+		} else {
+			port = watchdogPort
+		}
 	}
-	urlStr := fmt.Sprintf("http://%s:%s", instance.GetIpAddress(), port)
+	urlStr := fmt.Sprintf("http://%s:%s?function=%s", instance.GetIpAddress(), port, serviceName)
 	serviceAddr, err := url.Parse(urlStr)
 	if err != nil {
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to parse url for %s: %s", serviceName, err)

@@ -111,9 +111,15 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		client := swagger.NewAPIClient(swagger.NewConfiguration())
 		api := client.DefaultApi
 		// register function for api
+		var imageName string
+		if req.Language == "hybrid-node18" {
+			imageName = "debian-nodejs"
+		} else {
+			imageName = "debian-python"
+		}
 		function := swagger.Function{
 			FuncName: serviceName,
-			Image:    "debian",
+			Image:    imageName,
 			Kernel:   "sanpage",
 			Vcpu:     4,
 		}
