@@ -127,7 +127,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Body: optional.NewInterface(function),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to create function")
 		}
 
 		// prepare mincore
@@ -139,7 +139,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Body: optional.NewInterface(vms),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to create vm")
 		}
 		time.Sleep(5 * time.Second)
 		snapshot := swagger.Snapshot{
@@ -153,10 +153,10 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Body: optional.NewInterface(snapshot),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to create full snapshot")
 		}
 		if _, err = api.VmsVmIdDelete(context.Background(), vm.VmId); err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete vm after full snapshot")
 		}
 		patchStateOptions := swagger.DefaultApiSnapshotsSsIdPatchOpts{
 			Body: optional.NewInterface(map[string]bool{
@@ -166,7 +166,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			}),
 		}
 		if _, err = api.SnapshotsSsIdPatch(context.Background(), baseSnapshot.SsId, &patchStateOptions); err != nil {
-			return err
+			return errors.Wrap(err, "failed to drop snapshot cache")
 		}
 		time.Sleep(2 * time.Second)
 		invocation := swagger.Invocation{
@@ -182,7 +182,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Body: optional.NewInterface(invocation),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to invoke function")
 		}
 		newVmID := result.VmId
 		invocation = swagger.Invocation{
@@ -196,7 +196,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Body: optional.NewInterface(invocation),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to drop cache")
 		}
 		snapshot = swagger.Snapshot{
 			VmId:              newVmID,
@@ -212,18 +212,18 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Body: optional.NewInterface(snapshot),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to create warm snapshot")
 		}
 		snapshots := []string{warmSnapshot.SsId}
 		if _, err = api.VmsVmIdDelete(context.Background(), newVmID); err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete vm")
 		}
 		time.Sleep(2 * time.Second)
 		_, err = api.SnapshotsSsIdMincorePut(context.Background(), warmSnapshot.SsId, &swagger.DefaultApiSnapshotsSsIdMincorePutOpts{
 			Source: optional.NewString(baseSnapshot.SsId),
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to put mincore")
 		}
 		_, err = api.SnapshotsSsIdMincorePatch(context.Background(), swagger.SsIdMincoreBody1{
 			TrimRegions:       false,
@@ -235,14 +235,14 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			DropWsCache:       true,
 		}, warmSnapshot.SsId)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to patch mincore")
 		}
 		const parallel = 1
 		for i := 0; i < parallel-1; i++ {
 			memFilePath := fmt.Sprintf("Full.memfile.%d", i)
 			snapshot, _, err := api.SnapshotsPut(context.Background(), baseSnapshot.SsId, memFilePath)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "failed to create snapshot copy")
 			}
 			snapshots = append(snapshots, snapshot.SsId)
 		}
