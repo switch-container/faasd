@@ -67,9 +67,9 @@ func GetFreeNetwork(ctx context.Context) (string, *list.Element, error) {
 	return namespace, namespaceElementPtr, nil
 }
 
-func ReleaseNetwork(namespace *list.Element) {
+func ReleaseNetwork(namespacePtr *list.Element) {
 	networkLock.Lock()
-	networksFree.PushBack(namespace)
-	networksUsed.Remove(namespace)
+	networksFree.PushBack(*namespacePtr)
+	networksUsed.Remove(namespacePtr)
 	networkLock.Unlock()
 }
