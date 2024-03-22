@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"io"
@@ -460,43 +459,10 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	api := client.DefaultApi
 
 	// find a free namespace
-	var namespace string
-	var namespaceElementPtr *list.Element
-	faasnap.NetworkLock.Lock()
-	freeNetworkCount := faasnap.NetworksFree.Len()
-	usedNetworkCount := faasnap.NetworksUsed.Len()
-	if freeNetworkCount == 0 {
-		// no free network, check if the total number of networks is less than 100
-		totalNetworkCount := freeNetworkCount + usedNetworkCount
-		if totalNetworkCount >= 100 {
-			return nil, errors.New("no free api network available")
-		}
-		// still have available network, create a new one
-		namespace = fmt.Sprintf("fc%d", totalNetworkCount+1)
-		newInterface := swagger.NetifacesNamespaceBody{
-			HostDevName: "vmtap0",
-			IfaceId:     "eth0",
-			GuestMac:    "AA:FC:00:00:00:01", // fixed MAC
-			GuestAddr:   "172.16.0.2",        // fixed IP
-			UniqueAddr:  fmt.Sprintf("192.168.0.%d", totalNetworkCount+3),
-		}
-		_, err := api.NetIfacesNamespacePut(ctx, namespace, &swagger.DefaultApiNetIfacesNamespacePutOpts{
-			Body: optional.NewInterface(newInterface),
-		})
-		if err != nil {
-			return nil, errors.Errorf("failed to create new network: %v", err)
-		}
-		faasnap.NetworksUsed.PushBack(namespace)
-		namespaceElementPtr = faasnap.NetworksUsed.Back()
-	} else {
-		// reuse a free network
-		e := faasnap.NetworksFree.Front()
-		namespace = e.Value.(string)
-		faasnap.NetworksFree.Remove(e)
-		faasnap.NetworksUsed.PushBack(namespace)
-		namespaceElementPtr = faasnap.NetworksUsed.Back()
+	namespace, namespaceElementPtr, err := faasnap.GetFreeNetwork(ctx)
+	if err != nil {
+		return nil, errors.Errorf("failed to get free network: %v", err)
 	}
-	faasnap.NetworkLock.Unlock()
 
 	snapshotId := req.SnapshotIds[0]
 	invocation := swagger.Invocation{

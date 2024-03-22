@@ -30,7 +30,7 @@ require (
 require (
 	github.com/checkpoint-restore/go-criu/v5 v5.3.0
 	github.com/rs/zerolog v1.31.0
-	google.golang.org/protobuf v1.31.0
+	google.golang.org/protobuf v1.33.0
 )
 
 require (

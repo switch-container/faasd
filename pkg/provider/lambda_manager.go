@@ -15,6 +15,7 @@ import (
 	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	"github.com/switch-container/faasd/pkg/provider/faasnap"
 	"github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger"
 )
 
@@ -131,9 +132,11 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		}
 
 		// prepare mincore
+		namespace, namespacePtr, err := faasnap.GetFreeNetwork(context.Background())
+		defer faasnap.ReleaseNetwork(namespacePtr)
 		vms := swagger.VmsBody{
 			FuncName:  serviceName,
-			Namespace: "fc1",
+			Namespace: namespace,
 		}
 		vm, _, err := api.VmsPost(context.Background(), &swagger.DefaultApiVmsPostOpts{
 			Body: optional.NewInterface(vms),
@@ -175,7 +178,7 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 			Mincore:     -1,
 			MincoreSize: 1024,
 			EnableReap:  false,
-			Namespace:   "fc1",
+			Namespace:   namespace,
 			UseMemFile:  true,
 		}
 		result, _, err := api.InvocationsPost(context.Background(), &swagger.DefaultApiInvocationsPostOpts{

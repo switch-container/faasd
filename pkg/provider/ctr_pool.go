@@ -239,10 +239,7 @@ func (ctr *FaasnapCtr) Kill() error {
 	if err != nil {
 		return err
 	}
-	faasnap.NetworkLock.Lock()
-	faasnap.NetworksFree.PushBack(ctr.network)
-	faasnap.NetworksUsed.Remove(ctr.network)
-	faasnap.NetworkLock.Unlock()
+	faasnap.ReleaseNetwork(ctr.network)
 	return nil
 }
 
