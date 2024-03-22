@@ -184,9 +184,9 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		result, _, err := api.InvocationsPost(context.Background(), &swagger.DefaultApiInvocationsPostOpts{
 			Body: optional.NewInterface(invocation),
 		})
-		//if err != nil {
-		//	return errors.Wrap(err, "failed to invoke function")
-		//}
+		if err != nil {
+			return errors.Wrap(err, "failed to invoke function")
+		}
 		newVmID := result.VmId
 		invocation = swagger.Invocation{
 			FuncName:   "run",
