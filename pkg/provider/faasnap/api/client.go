@@ -1,5 +1,5 @@
 /*
- * api
+ * faasnap
  *
  * FaaSnap API
  *
@@ -36,7 +36,7 @@ var (
 	xmlCheck  = regexp.MustCompile("(?i:[application|text]/xml)")
 )
 
-// APIClient manages communication with the api API v1.0.0
+// APIClient manages communication with the faasnap API v1.0.0
 // In most cases there should be only one, shared, APIClient.
 type APIClient struct {
 	cfg    *Configuration

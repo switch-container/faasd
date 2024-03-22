@@ -1,5 +1,5 @@
 /*
- * api
+ * faasnap
  *
  * FaaSnap API
  *

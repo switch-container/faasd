@@ -1,10 +1,10 @@
 openapi: 3.0.1
 info:
-  title: api
+  title: faasnap
   description: FaaSnap API
   version: 1.0.0
 servers:
-- url: http://localhost:8080/
+  - url: http://localhost:8080/
 paths:
   /ui:
     get:
@@ -12,21 +12,21 @@ paths:
       responses:
         "200":
           description: ok
-          content: {}
+          content: { }
   /ui/data:
     get:
       description: UI
       responses:
         "200":
           description: ok
-          content: {}
+          content: { }
   /metrics:
     get:
       description: Metrics
       responses:
         "200":
           description: ok
-          content: {}
+          content: { }
   /functions:
     get:
       description: Return a list of functions
@@ -44,14 +44,14 @@ paths:
       description: Create a new function
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/Function'
         required: false
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -76,7 +76,7 @@ paths:
       description: Create a new VM
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/vms_body'
         required: false
@@ -98,13 +98,13 @@ paths:
     get:
       description: Describe a VM
       parameters:
-      - name: vmId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: vmId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       responses:
         "200":
           description: OK
@@ -121,17 +121,17 @@ paths:
     delete:
       description: Stop a VM
       parameters:
-      - name: vmId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: vmId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -165,20 +165,20 @@ paths:
     put:
       description: Put snapshot (copy)
       parameters:
-      - name: from_snapshot
-        in: query
-        required: true
-        style: form
-        explode: true
-        schema:
-          type: string
-      - name: mem_file_path
-        in: query
-        required: true
-        style: form
-        explode: true
-        schema:
-          type: string
+        - name: from_snapshot
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: string
+        - name: mem_file_path
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: string
       responses:
         "200":
           description: OK
@@ -196,7 +196,7 @@ paths:
       description: Take a snapshot
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/Snapshot'
         required: false
@@ -218,16 +218,16 @@ paths:
     post:
       description: Load a snapshot
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/Invocation'
         required: false
@@ -248,23 +248,23 @@ paths:
     patch:
       description: Change snapshot state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/snapshots_ssId_body'
         required: false
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -276,13 +276,13 @@ paths:
     get:
       description: Get mincore state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       responses:
         "200":
           description: Mincore state
@@ -299,24 +299,24 @@ paths:
     put:
       description: Put mincore state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
-      - name: source
-        in: query
-        required: false
-        style: form
-        explode: true
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+        - name: source
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: string
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -326,13 +326,13 @@ paths:
     post:
       description: Add mincore layer
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       requestBody:
         content:
           '*/*':
@@ -342,7 +342,7 @@ paths:
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -353,23 +353,23 @@ paths:
     patch:
       description: Change mincore state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/ssId_mincore_body_1'
         required: true
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -381,17 +381,17 @@ paths:
     get:
       description: get reap state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -401,17 +401,17 @@ paths:
     delete:
       description: delete reap state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -421,13 +421,13 @@ paths:
     patch:
       description: Change reap state
       parameters:
-      - name: ssId
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: ssId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       requestBody:
         content:
           '*/*':
@@ -437,7 +437,7 @@ paths:
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -449,23 +449,23 @@ paths:
     put:
       description: Put a vm network
       parameters:
-      - name: namespace
-        in: path
-        required: true
-        style: simple
-        explode: false
-        schema:
-          type: string
+        - name: namespace
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/netifaces_namespace_body'
         required: false
       responses:
         "200":
           description: OK
-          content: {}
+          content: { }
         "400":
           description: Invalid request
           content:
@@ -478,7 +478,7 @@ paths:
       description: Post an invocation
       requestBody:
         content:
-          '*/*':
+          application/json:
             schema:
               $ref: '#/components/schemas/Invocation'
         required: false
@@ -500,7 +500,7 @@ components:
   schemas:
     Function:
       required:
-      - func_name
+        - func_name
       type: object
       properties:
         func_name:
@@ -521,7 +521,7 @@ components:
         func_name: func_name
     VM:
       required:
-      - vmId
+        - vmId
       type: object
       properties:
         vmId:
@@ -530,8 +530,8 @@ components:
           type: string
         vmConf:
           type: object
-          properties: {}
-          example: {}
+          properties: { }
+          example: { }
         vmPath:
           type: string
         pid:
@@ -539,7 +539,7 @@ components:
         ip:
           type: string
       example:
-        vmConf: {}
+        vmConf: { }
         vmId: vmId
         ip: ip
         pid: 0
@@ -547,7 +547,7 @@ components:
         vmPath: vmPath
     Snapshot:
       required:
-      - vmId
+        - vmId
       type: object
       properties:
         vmId:
@@ -580,7 +580,7 @@ components:
         ssId: ssId
     Invocation:
       required:
-      - func_name
+        - func_name
       type: object
       properties:
         func_name:
