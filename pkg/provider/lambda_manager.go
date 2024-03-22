@@ -148,8 +148,8 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		snapshot := swagger.Snapshot{
 			VmId:         vm.VmId,
 			SnapshotType: "Full",
-			SnapshotPath: "Full.snapshot",
-			MemFilePath:  "Full.memfile",
+			SnapshotPath: fmt.Sprintf("snapshot/%s_full.snapshot", serviceName),
+			MemFilePath:  fmt.Sprintf("snapshot/%s_full.memfile", serviceName),
 			Version:      "0.23.0",
 		}
 		baseSnapshot, _, err := api.SnapshotsPost(context.Background(), &swagger.DefaultApiSnapshotsPostOpts{
@@ -204,8 +204,8 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		snapshot = swagger.Snapshot{
 			VmId:              newVmID,
 			SnapshotType:      "Full",
-			SnapshotPath:      "Warm.snapshot",
-			MemFilePath:       "Warm.memfile",
+			SnapshotPath:      fmt.Sprintf("snapshot/%s_warm.snapshot", serviceName),
+			MemFilePath:       fmt.Sprintf("snapshot/%s_warm.memfile", serviceName),
 			Version:           "0.23.0",
 			RecordRegions:     true,
 			SizeThreshold:     0,
