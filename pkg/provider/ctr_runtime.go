@@ -560,7 +560,7 @@ func (r CtrRuntime) SwitchStart(req types.FunctionDeployment, id uint64, candida
 		CRWorkDir:         path.Join(pkg.FaasdCRIUResotreWorkPrefix, GetInstanceID(serviceName, id)),
 		CRLogFileName:     "restore.log",
 		// TODO(huang-jl) for better performance, we need modify it to 0
-		CRLogLevel:   4,
+		CRLogLevel:   0,
 		CandidatePID: candidate.GetPid(),
 	}
 
