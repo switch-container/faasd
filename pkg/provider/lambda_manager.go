@@ -3,20 +3,19 @@ package provider
 import (
 	"container/heap"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
 
-	"github.com/antihax/optional"
 	"github.com/containerd/containerd"
 	gocni "github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-	"github.com/switch-container/faasd/pkg/provider/faasnap"
-	"github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger"
 )
 
 var lmlogger = log.With().
@@ -104,167 +103,27 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 	serviceName := req.Service
 
-	switch p := m.policy.(type) {
-	case BaselinePolicy:
-		if p.defaultDecision != FAASNAP_START {
-			break
-		}
-		client := swagger.NewAPIClient(swagger.NewConfiguration())
-		api := client.DefaultApi
-		// register function for api
-		var imageName string
-		if req.Language == "hybrid-node18" {
-			imageName = "debian-nodejs"
-		} else {
-			imageName = "debian-python"
-		}
-		function := swagger.Function{
-			FuncName: serviceName,
-			Image:    imageName,
-			Kernel:   "sanpage",
-			Vcpu:     4,
-		}
-		_, err := api.FunctionsPost(context.Background(), &swagger.DefaultApiFunctionsPostOpts{
-			Body: optional.NewInterface(function),
-		})
+	if p, ok := m.policy.(BaselinePolicy); ok && p.defaultDecision == FAASNAP_START {
+		// load snapshotids from local file
+		file, err := os.Open(pkg.FaasnapSnapshotIdFile)
 		if err != nil {
-			return errors.Wrap(err, "failed to create function")
+			return errors.Wrap(err, "failed to open snapshot file")
 		}
-
-		// prepare mincore
-		namespace, namespacePtr, err := faasnap.GetFreeNetwork(context.Background())
-		defer faasnap.ReleaseNetwork(namespacePtr)
-		vms := swagger.VmsBody{
-			FuncName:  serviceName,
-			Namespace: namespace,
-		}
-		vm, _, err := api.VmsPost(context.Background(), &swagger.DefaultApiVmsPostOpts{
-			Body: optional.NewInterface(vms),
-		})
+		defer file.Close()
+		data, err := io.ReadAll(file)
 		if err != nil {
-			return errors.Wrap(err, "failed to create vm")
+			return errors.Wrap(err, "failed to read snapshot file")
 		}
-		time.Sleep(5 * time.Second)
-		snapshot := swagger.Snapshot{
-			VmId:         vm.VmId,
-			SnapshotType: "Full",
-			SnapshotPath: fmt.Sprintf("snapshot/%s_full.snapshot", serviceName),
-			MemFilePath:  fmt.Sprintf("snapshot/%s_full.memfile", serviceName),
-			Version:      "0.23.0",
-		}
-		baseSnapshot, _, err := api.SnapshotsPost(context.Background(), &swagger.DefaultApiSnapshotsPostOpts{
-			Body: optional.NewInterface(snapshot),
-		})
+		var jsonData map[string]interface{}
+		err = json.Unmarshal(data, &jsonData)
 		if err != nil {
-			return errors.Wrap(err, "failed to create full snapshot")
+			return errors.Wrap(err, "failed to unmarshal snapshot file")
 		}
-		if _, err = api.VmsVmIdDelete(context.Background(), vm.VmId); err != nil {
-			return errors.Wrap(err, "failed to delete vm after full snapshot")
+		snapshotId, ok := jsonData[serviceName]
+		if !ok {
+			return errors.Errorf("snapshot not found for service %s", serviceName)
 		}
-		patchStateOptions := swagger.DefaultApiSnapshotsSsIdPatchOpts{
-			Body: optional.NewInterface(map[string]bool{
-				"dig_hole":   false,
-				"load_cache": false,
-				"drop_cache": true,
-			}),
-		}
-		if _, err = api.SnapshotsSsIdPatch(context.Background(), baseSnapshot.SsId, &patchStateOptions); err != nil {
-			return errors.Wrap(err, "failed to drop snapshot cache")
-		}
-		time.Sleep(2 * time.Second)
-		invocation := swagger.Invocation{
-			FuncName:    serviceName,
-			SsId:        baseSnapshot.SsId,
-			Mincore:     -1,
-			MincoreSize: 1024,
-			EnableReap:  false,
-			Namespace:   namespace,
-			UseMemFile:  true,
-		}
-		result, _, err := api.InvocationsPost(context.Background(), &swagger.DefaultApiInvocationsPostOpts{
-			Body: optional.NewInterface(invocation),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to invoke function")
-		}
-		newVmID := result.VmId
-		invocation = swagger.Invocation{
-			FuncName:   "run",
-			VmId:       newVmID,
-			Params:     "{\"args\":\"echo 8 > /proc/sys/vm/drop_caches\"}",
-			Mincore:    -1,
-			EnableReap: false,
-		}
-		_, _, err = api.InvocationsPost(context.Background(), &swagger.DefaultApiInvocationsPostOpts{
-			Body: optional.NewInterface(invocation),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to drop cache")
-		}
-		snapshot = swagger.Snapshot{
-			VmId:              newVmID,
-			SnapshotType:      "Full",
-			SnapshotPath:      fmt.Sprintf("snapshot/%s_warm.snapshot", serviceName),
-			MemFilePath:       fmt.Sprintf("snapshot/%s_warm.memfile", serviceName),
-			Version:           "0.23.0",
-			RecordRegions:     true,
-			SizeThreshold:     0,
-			IntervalThreshold: 32,
-		}
-		warmSnapshot, _, err := api.SnapshotsPost(context.Background(), &swagger.DefaultApiSnapshotsPostOpts{
-			Body: optional.NewInterface(snapshot),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to create warm snapshot")
-		}
-		snapshots := []string{warmSnapshot.SsId}
-		if _, err = api.VmsVmIdDelete(context.Background(), newVmID); err != nil {
-			return errors.Wrap(err, "failed to delete vm")
-		}
-		time.Sleep(2 * time.Second)
-		_, err = api.SnapshotsSsIdMincorePut(context.Background(), warmSnapshot.SsId, &swagger.DefaultApiSnapshotsSsIdMincorePutOpts{
-			Source: optional.NewString(baseSnapshot.SsId),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to put mincore")
-		}
-		_, err = api.SnapshotsSsIdMincorePatch(context.Background(), swagger.SsIdMincoreBody1{
-			TrimRegions:       false,
-			ToWsFile:          "",
-			InactiveWs:        false,
-			ZeroWs:            false,
-			SizeThreshold:     0,
-			IntervalThreshold: 32,
-			DropWsCache:       true,
-		}, warmSnapshot.SsId)
-		if err != nil {
-			return errors.Wrap(err, "failed to patch mincore")
-		}
-		const parallel = 1
-		for i := 0; i < parallel-1; i++ {
-			memFilePath := fmt.Sprintf("Full.memfile.%d", i)
-			snapshot, _, err := api.SnapshotsPut(context.Background(), baseSnapshot.SsId, memFilePath)
-			if err != nil {
-				return errors.Wrap(err, "failed to create snapshot copy")
-			}
-			snapshots = append(snapshots, snapshot.SsId)
-		}
-		if _, err = api.SnapshotsSsIdPatch(context.Background(), baseSnapshot.SsId, &patchStateOptions); err != nil {
-			return err
-		}
-		for _, snapshotId := range snapshots {
-			if _, err = api.SnapshotsSsIdPatch(context.Background(), snapshotId, &patchStateOptions); err != nil {
-				return err
-			}
-		}
-		_, err = api.SnapshotsSsIdMincorePatch(context.Background(), swagger.SsIdMincoreBody1{
-			DropWsCache: true,
-		}, warmSnapshot.SsId)
-
-		// save snapshot ids
-		req.SnapshotIds = snapshots
-	default:
-		break
+		req.SnapshotIds = []string{snapshotId.(string)}
 	}
 
 	// first register for app overlay cache

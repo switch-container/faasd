@@ -34,7 +34,7 @@ const (
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
 
 	// NOTE by huang-jl: only the following params need be tuned
-	DefaultDaxDevicePath = "/dev/dax0.1"
+	DefaultDaxDevicePath   = "/dev/dax0.1"
 	DefaultRDMABufSockPath = "/run/pseudo-mm-rdma-server-buf.sock"
 
 	// default checkpoint image directory
@@ -64,4 +64,7 @@ const (
 
 	// default memory bound is 32 GB
 	DefaultMemoryBound int64 = 32
+
+	// FaasnapSnapshotIdFile is the file path to load snapshot ids for Faasnap
+	FaasnapSnapshotIdFile = "/mnt/data/faasnap/snapshot/snapshots.json"
 )
