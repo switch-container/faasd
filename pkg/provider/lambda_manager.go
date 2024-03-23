@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,9 +120,10 @@ func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 		if err != nil {
 			return errors.Wrap(err, "failed to unmarshal snapshot file")
 		}
-		snapshotId, ok := jsonData[serviceName]
+		snapshotFuncName := strings.SplitN(serviceName, "_", 2)[0]
+		snapshotId, ok := jsonData[snapshotFuncName]
 		if !ok {
-			return errors.Errorf("snapshot not found for service %s", serviceName)
+			return errors.Errorf("snapshot not found for service %s (%s)", serviceName, snapshotFuncName)
 		}
 		req.SnapshotIds = []string{snapshotId.(string)}
 	}
