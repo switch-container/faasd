@@ -39,7 +39,7 @@ func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 	// here we only care about lambda
 	lambdaName := ServiceName2LambdaName(instance.ServiceName)
 	switch instance.depolyDecision {
-	case COLD_START, CR_START, CR_LAZY_START:
+	case COLD_START, CR_START, CR_LAZY_START, FAASNAP_START:
 		if err := metrics.GetMetricLogger().Emit(pkg.StartNewLatencyMetric, lambdaName, dur); err != nil {
 			return err
 		}
@@ -85,6 +85,7 @@ func proxyRequest(ctx context.Context, originalReq *http.Request, proxyClient *h
 	originalReq.Body.Close()
 	// build proxy request
 	pathVars := mux.Vars(originalReq)
+	originalReq.URL.RawQuery += "&function=" + serviceName
 	proxyReq, err := buildProxyRequest(originalReq, targetUrl, pathVars["params"])
 	if err != nil {
 		err = errors.Wrapf(err, "Failed to resolve service %s", serviceName)
@@ -172,7 +173,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	if p, ok := m.policy.(BaselinePolicy); ok && p.defaultDecision == FAASNAP_START {
 		port = "5000"
 	}
-	urlStr := fmt.Sprintf("http://%s:%s?function=%s", instance.GetIpAddress(), port, serviceName)
+	urlStr := fmt.Sprintf("http://%s:%s", instance.GetIpAddress(), port)
 	serviceAddr, err := url.Parse(urlStr)
 	if err != nil {
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to parse url for %s: %s", serviceName, err)
