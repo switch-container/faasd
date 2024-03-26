@@ -163,10 +163,10 @@ func makeProviderCmd() *cobra.Command {
 			ty   metrics.MetricType
 		}{
 			{pkg.SwitchLatencyMetric, metrics.LATENCY_METRIC},
-			{pkg.SwitchCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.SwitchCountMetric, metrics.FINE_GRAINED_COUNTER},
 			{pkg.StartNewLatencyMetric, metrics.LATENCY_METRIC},
-			{pkg.StartNewCountMetric, metrics.FIND_GRAINED_COUNTER},
-			{pkg.ReuseCountMetric, metrics.FIND_GRAINED_COUNTER},
+			{pkg.StartNewCountMetric, metrics.FINE_GRAINED_COUNTER},
+			{pkg.ReuseCountMetric, metrics.FINE_GRAINED_COUNTER},
 			{pkg.ReuseLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.InvokeCountMetric, metrics.SINGLE_COUNTER},
 
@@ -175,6 +175,8 @@ func makeProviderCmd() *cobra.Command {
 			{pkg.CRIUHandleNsMetric, metrics.LATENCY_METRIC},
 			{pkg.SwitchKillMetric, metrics.LATENCY_METRIC},
 			{pkg.CRIUSwrkCmdStartMetric, metrics.LATENCY_METRIC},
+
+			{pkg.ExecLatencyMetric, metrics.LATENCY_METRIC},
 		} {
 			metricLogger.RegisterMetric(m.name, m.ty)
 		}

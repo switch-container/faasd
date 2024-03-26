@@ -35,12 +35,19 @@ const (
 	retryInterval      = 100 * time.Millisecond
 )
 
-func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
-	// here we only care about lambda
+// NOTE by huang-jl:
+// prepareDur only account for MakeCtrInstanceFor(), i.e., start a container
+// execDur account for e2e execution (including retry latency, i.e., the latency of lambda initialization)
+// retry is the retry times in proxyReq (mainly happend when cold start,
+//    that the http server in container is not ready)
+func recordStartupMetric(prepareDur time.Duration, execDur time.Duration, retry int, instance *CtrInstance) error {
+	retryDur := time.Duration(retry) * retryInterval
+  startupDur := prepareDur + retryDur
+	// here startup, reuse, switch latency only care about lambda
 	lambdaName := ServiceName2LambdaName(instance.ServiceName)
 	switch instance.depolyDecision {
 	case COLD_START, CR_START, CR_LAZY_START, FAASNAP_START:
-		if err := metrics.GetMetricLogger().Emit(pkg.StartNewLatencyMetric, lambdaName, dur); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.StartNewLatencyMetric, lambdaName, startupDur); err != nil {
 			return err
 		}
 		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, lambdaName, 1); err != nil {
@@ -49,8 +56,8 @@ func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 	case REUSE:
 		// NOTE by huang-jl we need reuse latency metric, since in current implementation, cold start
 		// may failed due to concurrency limitation, so even reuse may consume some time (e.g., waiting to retry)
-		if dur > time.Millisecond {
-			if err := metrics.GetMetricLogger().Emit(pkg.ReuseLatencyMetric, lambdaName, dur); err != nil {
+		if startupDur > time.Millisecond {
+			if err := metrics.GetMetricLogger().Emit(pkg.ReuseLatencyMetric, lambdaName, startupDur); err != nil {
 				return err
 			}
 		}
@@ -58,7 +65,7 @@ func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 			return err
 		}
 	case SWITCH:
-		if err := metrics.GetMetricLogger().Emit(pkg.SwitchLatencyMetric, lambdaName, dur); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.SwitchLatencyMetric, lambdaName, startupDur); err != nil {
 			return err
 		}
 		if err := metrics.GetMetricLogger().Emit(pkg.SwitchCountMetric, lambdaName, 1); err != nil {
@@ -70,6 +77,11 @@ func recordStartupMetric(dur time.Duration, instance *CtrInstance) error {
 	if err := metrics.GetMetricLogger().Emit(pkg.InvokeCountMetric, lambdaName, 1); err != nil {
 		return err
 	}
+
+  // execute time is related to serviceName instead of only lambda
+  if err := metrics.GetMetricLogger().Emit(pkg.ExecLatencyMetric, instance.ServiceName, execDur); err != nil {
+    return err
+  }
 	return nil
 }
 
@@ -128,6 +140,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	var (
 		err           error
 		prepareCtrDur time.Duration
+		execDur       time.Duration
 	)
 
 	start := time.Now()
@@ -179,8 +192,9 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		httputil.Errorf(w, http.StatusInternalServerError, "Failed to parse url for %s: %s", serviceName, err)
 		return
 	}
+	begin = time.Now()
 	// start proxy request
-	retry_times, response, err := proxyRequest(ctx, originalReq, proxyClient, *serviceAddr, serviceName)
+	retryTimes, response, err := proxyRequest(ctx, originalReq, proxyClient, *serviceAddr, serviceName)
 	if err != nil {
 		// TODO(huang-jl) garbage collect this ctr instance
 		log.Error().Err(err).Str("instance", instanceID).Str("url", urlStr).
@@ -189,11 +203,11 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		httputil.Errorf(w, http.StatusInternalServerError, "[%s] invoke to %s failed: %s", instanceID, urlStr, err)
 		return
 	}
-
+	execDur = time.Since(begin)
 	// NOTE by huang-jl: the startup latency should consists of app initialization time
 	// since we poll for the status of container (i.e. retryInterval), this time is not accurate.
 	// But the intialization time of container typically hundred of ms, so it is ok.
-	if err = recordStartupMetric(prepareCtrDur+time.Duration(retry_times)*retryInterval, instance); err != nil {
+	if err = recordStartupMetric(prepareCtrDur, execDur, retryTimes, instance); err != nil {
 		httputil.Errorf(w, http.StatusInternalServerError, "failed to recordStartupMetric for %s: %s", serviceName, err)
 		return
 	}
@@ -207,7 +221,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		defer response.Body.Close()
 	}
 
-	log.Debug().Str("instance", instanceID).Str("url", urlStr).Int("retry times", retry_times).
+	log.Debug().Str("instance", instanceID).Str("url", urlStr).Int("retry times", retryTimes).
 		Str("depoly decision", instance.depolyDecision.String()).
 		Dur("total overhead", time.Since(start)).Int("status code", response.StatusCode).Msg("invoke succeed")
 

@@ -32,6 +32,7 @@ const (
 	CRIUHandleNsMetric     = "criu-handle-ns-latency"
 	SwitchKillMetric       = "criu-switch-kill-latency"
 	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
+	ExecLatencyMetric      = "exec-latency"
 
 	// NOTE by huang-jl: only the following params need be tuned
 	DefaultDaxDevicePath   = "/dev/dax0.1"

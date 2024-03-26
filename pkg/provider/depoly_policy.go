@@ -25,6 +25,8 @@ func (d DeployDecision) String() string {
 		return "reuse"
 	case SWITCH:
 		return "switch"
+  case FAASNAP_START:
+    return "faasnap"
 	default:
 		return "invalid decision"
 	}
@@ -54,7 +56,7 @@ type DeployResult struct {
 
 func (d DeployResult) applyMemUsage(m *LambdaManager) {
 	switch d.decision {
-	case COLD_START, CR_LAZY_START, CR_START:
+	case COLD_START, CR_LAZY_START, CR_START, FAASNAP_START:
 		m.memBound.AddCtr(d.targetPool.memoryRequirement)
 	case REUSE:
 	case SWITCH:

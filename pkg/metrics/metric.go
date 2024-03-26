@@ -12,7 +12,7 @@ type MetricType int
 
 const (
 	LATENCY_METRIC MetricType = iota
-	FIND_GRAINED_COUNTER
+	FINE_GRAINED_COUNTER
 	SINGLE_COUNTER
 )
 
@@ -52,7 +52,7 @@ func (m *MetricLogger) RegisterMetric(metricName string, ty MetricType) {
 				data:  make(map[string][]time.Duration),
 				label: metricName,
 			}
-		case FIND_GRAINED_COUNTER:
+		case FINE_GRAINED_COUNTER:
 			m.metrics[metricName] = &FineGrainedCounterMetric{
 				data:  map[string]int{},
 				label: metricName,
