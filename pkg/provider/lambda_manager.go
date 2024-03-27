@@ -79,6 +79,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 		terminate: false,
 		cleanup:   []func(*LambdaManager){killAllInstances},
 		memBound:  NewMemoryBound(memBound),
+		lru:       NewGloablFreePQ(),
 	}
 	m.registerCleanup(func(lm *LambdaManager) {
 		close(lm.Runtime.reapCh)
@@ -319,7 +320,7 @@ func (m *LambdaManager) Shutdown() {
 
 // clean **ALL** running instances if possible
 func killAllInstances(m *LambdaManager) {
-	lmlogger.Info().Msg("Start shutdown all instances of LambdaManager...")
+	lmlogger.Warn().Msg("Start killing all instances of LambdaManager...")
 
 	for _, pool := range m.pools {
 		pool.mu.Lock()
@@ -329,6 +330,7 @@ func killAllInstances(m *LambdaManager) {
 				m.KillInstance(ctrInstance)
 			}
 		}
+		pool.free = NewCtrFreePQ()
 
 		for _, ctrInstance := range pool.busy {
 			if ctrInstance.status.Valid() {
@@ -336,8 +338,12 @@ func killAllInstances(m *LambdaManager) {
 				m.KillInstance(ctrInstance)
 			}
 		}
+		pool.busy = make(map[uint64]*CtrInstance)
 		pool.mu.Unlock()
 	}
+	m.lruMu.Lock()
+	m.lru = NewGloablFreePQ()
+	m.lruMu.Unlock()
 }
 
 func (m *LambdaManager) registerCleanup(cleanupFn func(*LambdaManager)) {

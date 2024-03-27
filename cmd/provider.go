@@ -222,6 +222,7 @@ func makeProviderCmd() *cobra.Command {
 			RegisterFunction: provider.MakeRegisterHandler(m),
 			InvokeFunction:   provider.MakeInvokeHandler(m, *config),
 			MetricFunction:   provider.MakeMetricHandler(m),
+			KillAllInstance:  provider.MakeKillAllHandler(m),
 		}
 
 		log.Info().Int("port", *config.TCPPort).Msg("Listening on: 0.0.0.0")

@@ -38,6 +38,10 @@ func (pq *CtrFreePQ) Pop() any {
 
 type GlobalFreePQ []*CtrInstance
 
+func NewGloablFreePQ() GlobalFreePQ {
+	return []*CtrInstance{}
+}
+
 func (pq GlobalFreePQ) Len() int { return len(pq) }
 
 func (pq GlobalFreePQ) Less(i, j int) bool {

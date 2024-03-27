@@ -39,10 +39,11 @@ const (
 // prepareDur only account for MakeCtrInstanceFor(), i.e., start a container
 // execDur account for e2e execution (including retry latency, i.e., the latency of lambda initialization)
 // retry is the retry times in proxyReq (mainly happend when cold start,
-//    that the http server in container is not ready)
+//
+//	that the http server in container is not ready)
 func recordStartupMetric(prepareDur time.Duration, execDur time.Duration, retry int, instance *CtrInstance) error {
 	retryDur := time.Duration(retry) * retryInterval
-  startupDur := prepareDur + retryDur
+	startupDur := prepareDur + retryDur
 	// here startup, reuse, switch latency only care about lambda
 	lambdaName := ServiceName2LambdaName(instance.ServiceName)
 	switch instance.depolyDecision {
@@ -78,10 +79,10 @@ func recordStartupMetric(prepareDur time.Duration, execDur time.Duration, retry 
 		return err
 	}
 
-  // execute time is related to serviceName instead of only lambda
-  if err := metrics.GetMetricLogger().Emit(pkg.ExecLatencyMetric, instance.ServiceName, execDur); err != nil {
-    return err
-  }
+	// execute time is related to serviceName instead of only lambda
+	if err := metrics.GetMetricLogger().Emit(pkg.ExecLatencyMetric, instance.ServiceName, execDur); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -371,5 +372,12 @@ func MakeMetricHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.Req
 		default:
 			http.Error(w, "method not allowed for metric", http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func MakeKillAllHandler(m *LambdaManager) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		killAllInstances(m)
+		w.WriteHeader(http.StatusOK)
 	}
 }
