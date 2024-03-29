@@ -25,8 +25,8 @@ func (d DeployDecision) String() string {
 		return "reuse"
 	case SWITCH:
 		return "switch"
-  case FAASNAP_START:
-    return "faasnap"
+	case FAASNAP_START:
+		return "faasnap"
 	default:
 		return "invalid decision"
 	}
@@ -81,8 +81,18 @@ type DeployPolicy interface {
 	Decide(m *LambdaManager, serviceName string) (DeployResult, error)
 }
 
-type NaiveSwitchPolicy struct{}
+type NaiveSwitchPolicy struct {
+	noReuse bool
+}
 
+func NewNaiveSwitchPolicy(noReuse bool) NaiveSwitchPolicy {
+	return NaiveSwitchPolicy{noReuse}
+}
+
+// Note by huang-jl: Note that enable noReuse for switch policy may produce some bugs.
+// For example, we might switch from Instance A to Instance B, while they are of same
+// function type.
+// So please make sure you know what you are doing before enable NoReuse option.
 func (p NaiveSwitchPolicy) Decide(m *LambdaManager, serviceName string) (res DeployResult, err error) {
 	var (
 		instance      *CtrInstance
@@ -102,6 +112,11 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, serviceName string) (res Dep
 		return
 	}
 	res.targetPool = targetPool
+	if p.noReuse {
+		goto skip_reuse
+	}
+
+	// first try to fetch from function pool (i.e., reuse)
 	instance = targetPool.PopFromFree()
 	if instance != nil {
 		if !instance.status.Valid() {
@@ -115,6 +130,8 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, serviceName string) (res Dep
 		res.instance = instance
 		return
 	}
+
+skip_reuse:
 	// make sure we can checkpoint
 	if !m.Runtime.checkpointCache.Lookup(serviceName) {
 		dplogger.Warn().Str("lambda name", serviceName).Msg("could not find checkpoint image")
@@ -131,7 +148,7 @@ func (p NaiveSwitchPolicy) Decide(m *LambdaManager, serviceName string) (res Dep
 			return
 		}
 		// TODO(huang-jl) it is possible that localPQIndex maybe non-zero
-		// (e.g., a container has been push back to local pq)
+		// (e.g., another container just finish invocation and been push back to local pq)
 		if instance.localPQIndex != 0 {
 			dplogger.Warn().Str("instance id", instance.GetInstanceID()).
 				Int("local PQ Index", instance.localPQIndex).Msg("find weird instance when pop from global lru list")
@@ -161,9 +178,10 @@ cold_start_routine:
 
 type BaselinePolicy struct {
 	defaultDecision DeployDecision
+	noReuse         bool
 }
 
-func NewBaselinePolicy(defaultStartMethod string) (BaselinePolicy, error) {
+func NewBaselinePolicy(defaultStartMethod string, noReuse bool) (BaselinePolicy, error) {
 	var decision DeployDecision
 	switch defaultStartMethod {
 	case "cold":
@@ -177,7 +195,7 @@ func NewBaselinePolicy(defaultStartMethod string) (BaselinePolicy, error) {
 	default:
 		return BaselinePolicy{}, errors.Errorf("invalid default start method for baseline: %v", defaultStartMethod)
 	}
-	return BaselinePolicy{decision}, nil
+	return BaselinePolicy{decision, noReuse}, nil
 }
 
 func (p BaselinePolicy) Decide(m *LambdaManager, serviceName string) (res DeployResult, err error) {
@@ -198,6 +216,11 @@ func (p BaselinePolicy) Decide(m *LambdaManager, serviceName string) (res Deploy
 		return
 	}
 	res.targetPool = pool
+
+	if p.noReuse {
+		goto skip_reuse
+	}
+	// first try to fetch from function pool (i.e., reuse)
 	instance = pool.PopFromFree()
 	if instance != nil {
 		if !instance.status.Valid() {
@@ -211,7 +234,7 @@ func (p BaselinePolicy) Decide(m *LambdaManager, serviceName string) (res Deploy
 		res.instance = instance
 		return
 	}
-
+skip_reuse:
 	// if we cannot reuse, then start new container
 	res.decision = p.defaultDecision
 	killInstances, err = m.findKillingInstanceFor(pool.memoryRequirement)

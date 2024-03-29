@@ -52,6 +52,11 @@ type StartNewCtrRes struct {
 	err      error
 }
 
+type KillCtrReq struct {
+	instance *CtrInstance
+	notify   chan<- error
+}
+
 type CtrRuntime struct {
 	Client *containerd.Client
 	cni    gocni.CNI
@@ -59,31 +64,106 @@ type CtrRuntime struct {
 	alwaysPull      bool
 	rootfsManager   *RootfsManager
 	checkpointCache *CheckpointCache
+	killCh          chan<- KillCtrReq
 	workerCh        chan<- StartNewCtrReq
 	reapCh          chan<- int
 }
 
 func NewCtrRuntime(client *containerd.Client, cni gocni.CNI, rootfsManager *RootfsManager,
-	checkpointCache *CheckpointCache, alwaysPull bool, concurrency int) CtrRuntime {
+	checkpointCache *CheckpointCache, alwaysPull bool, startConcurrency, killConcurrency int) CtrRuntime {
 	// TODO(huang-jl) Is an 2-element channel enough ?
 	workerCh := make(chan StartNewCtrReq, 2)
 	reapCh := make(chan int, 1024)
+	// kill channel has higher buffer capacity than start, as
+	// we try to not block users
+	killCh := make(chan KillCtrReq, 16)
 	r := CtrRuntime{
 		Client:          client,
 		cni:             cni,
 		alwaysPull:      alwaysPull,
 		rootfsManager:   rootfsManager,
 		checkpointCache: checkpointCache,
+		killCh:          killCh,
 		workerCh:        workerCh,
 		reapCh:          reapCh,
 	}
-	for i := 0; i < concurrency; i++ {
-		go r.work(workerCh)
+	for i := 0; i < startConcurrency; i++ {
+		go r.startWork(workerCh)
+	}
+	for i := 0; i < killConcurrency; i++ {
+		go r.killWork(killCh)
 	}
 	go r.reap(reapCh)
 	return r
 }
 
+// NOTE by huang-jl:
+// kill instance actually has two sub-steps:
+// 1. Push the kill request into request queue (i.e., kill channel)
+// 2. kill worker actually kill the instance
+//
+// Since our kill channel has size limit, so even
+// step 1 might blocked (under high kill pressure).
+//
+// So the async here has two meanings:
+// 1. whether wait for step 1 to finish
+// 2. whether wait for step 2 to finish
+//
+// If `blockUntilEnqueu` is true, means that we have to wait step 1 to succeed.
+//
+// Return value indicate that enqueue is succeed or not (if `blockUntilEnqueu`
+// is true, the return value should always be true).
+func (r CtrRuntime) KillInstanceAsync(instance *CtrInstance, blockUntilEnqueue bool) bool {
+	req := KillCtrReq{
+		instance: instance,
+	}
+	if blockUntilEnqueue {
+		r.killCh <- req
+		return true
+	}
+	select {
+	case r.killCh <- req:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r CtrRuntime) KillInstanceSync(instance *CtrInstance) error {
+	notify := make(chan error)
+	req := KillCtrReq{
+		instance: instance,
+		notify:   notify,
+	}
+	r.killCh <- req
+	err := <-notify
+	return err
+}
+
+func (r CtrRuntime) killInstance(ctrInstance *CtrInstance) error {
+	ctrInstance.status = INVALID
+	return ctrInstance.Kill()
+}
+
+func (r CtrRuntime) killWork(ch <-chan KillCtrReq) {
+	for killReq := range ch {
+		var err error
+		instance := killReq.instance // supposed not to be empty
+		instanceID := instance.GetInstanceID()
+		if err = r.killInstance(instance); err != nil {
+			bglogger.Error().Err(err).Str("service name", instance.ServiceName).
+				Str("instance", instanceID).Msg("kill instance failed")
+		} else {
+			bglogger.Debug().Str("service name", instance.ServiceName).
+				Str("instance", instanceID).Msg("kill instance succeed")
+		}
+		if killReq.notify != nil {
+			killReq.notify <- err
+		}
+	}
+}
+
+// reap switched container process
 func (r CtrRuntime) reap(reapCh <-chan int) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGCHLD)
@@ -118,7 +198,7 @@ func (r CtrRuntime) reap(reapCh <-chan int) {
 }
 
 // This is the worker that cold start container
-func (r CtrRuntime) work(workerCh <-chan StartNewCtrReq) {
+func (r CtrRuntime) startWork(workerCh <-chan StartNewCtrReq) {
 	for req := range workerCh {
 		instance, err := r.startNewCtr(req)
 		res := StartNewCtrRes{instance: instance, err: err}
@@ -865,9 +945,4 @@ func getOSMounts() []specs.Mount {
 		Options:     []string{"rbind", "ro"},
 	})
 	return mounts
-}
-
-func (r CtrRuntime) KillInstance(ctrInstance *CtrInstance) error {
-	ctrInstance.status = INVALID
-	return ctrInstance.Kill()
 }

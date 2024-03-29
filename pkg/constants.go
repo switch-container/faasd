@@ -60,8 +60,7 @@ const (
 	PopulateCtrNum = 80
 
 	StartNewCtrConcurrencyLimit   = 10
-	CtrGCConcurrencyLimit         = 5
-	KillInstancesConcurrencyLimit = 4
+	KillCtrConcurrencyLimit       = 6
 
 	// default memory bound is 32 GB
 	DefaultMemoryBound int64 = 32

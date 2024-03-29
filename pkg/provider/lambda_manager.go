@@ -75,7 +75,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 		pools:  map[string]*CtrPool{},
 		policy: policy,
 		Runtime: NewCtrRuntime(client, cni, rootfsManager, checkpointCache,
-			false, pkg.StartNewCtrConcurrencyLimit),
+			false, pkg.StartNewCtrConcurrencyLimit, pkg.KillCtrConcurrencyLimit),
 		terminate: false,
 		cleanup:   []func(*LambdaManager){killAllInstances},
 		memBound:  NewMemoryBound(memBound),
@@ -84,6 +84,7 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 	m.registerCleanup(func(lm *LambdaManager) {
 		close(lm.Runtime.reapCh)
 		close(lm.Runtime.workerCh)
+    close(lm.Runtime.killCh)
 	})
 	// make sure the following dir exist
 	for _, dir := range []string{
@@ -164,35 +165,9 @@ func (m *LambdaManager) GetCtrPoolWOLock(serviceName string) (*CtrPool, error) {
 }
 
 func (m *LambdaManager) killInstancesForDepoly(instances []*CtrInstance) {
-	if len(instances) == 0 {
-		return
-	}
-	// start kill instances if necessary
-	var wg sync.WaitGroup
-	// min(4, len(depolyRes.killInstances))
-	concurrency := pkg.KillInstancesConcurrencyLimit
-	if concurrency > len(instances) {
-		concurrency = len(instances)
-	}
-	killCh := make(chan *CtrInstance, concurrency)
-	wg.Add(concurrency)
-	for i := 0; i < concurrency; i++ {
-		go func() {
-			defer wg.Done()
-			for instance := range killCh {
-				instanceID := instance.GetInstanceID()
-				if err := m.KillInstance(instance); err != nil {
-					lmlogger.Error().Err(err).Str("instance id", instanceID).
-						Msg("killInstancesForDepoly failed")
-				}
-			}
-		}()
-	}
 	for _, instance := range instances {
-		killCh <- instance
+		m.Runtime.KillInstanceAsync(instance, true)
 	}
-	close(killCh)
-	wg.Wait()
 }
 
 // A couple of unified entrypoints for operating on containers.
@@ -217,15 +192,6 @@ func (m *LambdaManager) SwitchStart(depolyRes DeployResult, id uint64) (*CtrInst
 			Uint64("id", id).Msg("switch ctr succeed")
 	}
 	return instance, err
-}
-
-func (m *LambdaManager) KillInstance(instance *CtrInstance) error {
-	if err := m.Runtime.KillInstance(instance); err != nil {
-		return errors.Wrapf(err, "KillInstance %s-%d failed", instance.ServiceName, instance.ID)
-	}
-	lmlogger.Debug().Str("service name", instance.ServiceName).
-		Uint64("id", instance.ID).Msg("kill instance succeed!")
-	return nil
 }
 
 // This is the core method in LambdaManager
@@ -263,7 +229,7 @@ restart:
 			Str("old service", depolyRes.instance.ServiceName).
 			Uint64("old id", depolyRes.instance.ID).Msg("policy decide to switch ctr")
 		return m.SwitchStart(depolyRes, id)
-	default: // COLD_START, CR_START, CR_LAZY_START
+	default: // COLD_START, CR_START, CR_LAZY_START, FAASNAP_START
 		if id == 0 {
 			id = depolyRes.targetPool.idAllocator.Add(1)
 		}
@@ -327,7 +293,7 @@ func killAllInstances(m *LambdaManager) {
 		for _, ctrInstance := range pool.free {
 			if ctrInstance.status.Valid() {
 				m.memBound.RemoveCtr(pool.memoryRequirement)
-				m.KillInstance(ctrInstance)
+				m.Runtime.KillInstanceSync(ctrInstance)
 			}
 		}
 		pool.free = NewCtrFreePQ()
@@ -335,7 +301,7 @@ func killAllInstances(m *LambdaManager) {
 		for _, ctrInstance := range pool.busy {
 			if ctrInstance.status.Valid() {
 				m.memBound.RemoveCtr(pool.memoryRequirement)
-				m.KillInstance(ctrInstance)
+				m.Runtime.KillInstanceSync(ctrInstance)
 			}
 		}
 		pool.busy = make(map[uint64]*CtrInstance)

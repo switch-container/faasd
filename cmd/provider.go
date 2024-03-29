@@ -41,9 +41,11 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().String("pull-policy", "Always", `Set to "Always" to force a pull of images upon deployment, or "IfNotPresent" to try to use a cached image.`)
 	command.Flags().Bool("baseline", false, `Set true to running in baseline mode (e.g., do container GC and disable switch).`)
 	command.Flags().Bool("no-bgtask", false, `Set true to to disable background task (e.g. legacy faasd mode)`)
-	command.Flags().String("start-method", "cold", `cold (cold start), criu (criu restore) or lazy (criu lazy restore), only enbale in baseline mode`)
+	command.Flags().String("start-method", "cold", `cold (cold start), criu (criu restore), lazy (criu lazy restore) or faasnap, only enbale in baseline mode`)
 	command.Flags().Int64("mem", pkg.DefaultMemoryBound, `memory bound for all containers in faasd (GB)`)
-	command.Flags().Int64("gc", pkg.BaselineGCCriterion, `gc criterion in minutes`)
+	command.Flags().Int("gc", pkg.BaselineGCCriterion, `gc criterion in minutes`)
+	command.Flags().Bool("no-reuse", false, `Set treu to force each invocation do not reuse within function pool (either cold start or switch)`)
+	command.Flags().Int("idle-num", pkg.PopulateCtrNum, `Number of conatiners to populate in background (only valid for non-baseline, i.e., switch method)`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
@@ -62,7 +64,15 @@ func makeProviderCmd() *cobra.Command {
 		if flagErr != nil {
 			return flagErr
 		}
-		gcMinute, flagErr := command.Flags().GetInt64("gc")
+		gcMinute, flagErr := command.Flags().GetInt("gc")
+		if flagErr != nil {
+			return flagErr
+		}
+		noReuse, flagErr := command.Flags().GetBool("no-reuse")
+		if flagErr != nil {
+			return flagErr
+		}
+		populateCtrNum, flagErr := command.Flags().GetInt("idle-num")
 		if flagErr != nil {
 			return flagErr
 		}
@@ -91,8 +101,10 @@ func makeProviderCmd() *cobra.Command {
 			return err
 		}
 
-		log.Info().Int64("mem bound", memoryBound).Str("start method", startMethod).Bool("isBaseline", isBaseline).
-			Str("Service Timeout", config.WriteTimeout.String()).Msg("faasd-provider starting...")
+		log.Info().Int64("mem bound", memoryBound).Str("start method", startMethod).Bool("baseline", isBaseline).
+			Bool("no reuse", noReuse).Bool("no background task", noBgTask).Int("gc", gcMinute).
+			Int("populate ctr", populateCtrNum).Str("Service Timeout", config.WriteTimeout.String()).
+			Msg("faasd-provider starting...")
 		printVersion()
 
 		wd, err := os.Getwd()
@@ -132,18 +144,19 @@ func makeProviderCmd() *cobra.Command {
 			bgTask = []provider.BackgroundTask{
 				// only for baseline
 				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval,
-					time.Duration(gcMinute)*time.Minute, pkg.CtrGCConcurrencyLimit),
+					time.Duration(gcMinute)*time.Minute),
 			}
-			baselinePolicy, err := provider.NewBaselinePolicy(startMethod)
+			baselinePolicy, err := provider.NewBaselinePolicy(startMethod, noReuse)
 			if err != nil {
 				return err
 			}
 			m, err = provider.NewLambdaManager(client, cni, baselinePolicy, memoryBound)
 		} else {
 			bgTask = []provider.BackgroundTask{
-				provider.NewPopulateCtrBackgroundTask(pkg.PopulateCtrNum),
+				provider.NewPopulateCtrBackgroundTask(populateCtrNum),
 			}
-			m, err = provider.NewLambdaManager(client, cni, provider.NaiveSwitchPolicy{}, memoryBound)
+			naiveSwitchPolicy := provider.NewNaiveSwitchPolicy(noReuse)
+			m, err = provider.NewLambdaManager(client, cni, naiveSwitchPolicy, memoryBound)
 		}
 		if err != nil {
 			return err

@@ -198,7 +198,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	retryTimes, response, err := proxyRequest(ctx, originalReq, proxyClient, *serviceAddr, serviceName)
 	if err != nil {
 		// TODO(huang-jl) garbage collect this ctr instance
-		log.Error().Err(err).Str("instance", instanceID).Str("url", urlStr).
+		log.Error().Err(err).Str("instance", instanceID).Str("url", urlStr).Int("retry", retryTimes).
 			Str("depoly decision", instance.depolyDecision.String()).Msg("invoke failed")
 		instance.status = INVALID
 		httputil.Errorf(w, http.StatusInternalServerError, "[%s] invoke to %s failed: %s", instanceID, urlStr, err)
