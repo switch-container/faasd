@@ -49,6 +49,9 @@ func runInstall(_ *cobra.Command, _ []string) error {
 	if err := cp("resolv.conf", faasdwd); err != nil {
 		return err
 	}
+	if err := cp("network.sh", faasdwd); err != nil {
+		return err
+	}
 	return nil
 }
 

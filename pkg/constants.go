@@ -20,19 +20,23 @@ const (
 	PseudoMMDrvPath          = "/dev/pseudo_mm"
 	CRIUPseudoMMDrvInheritID = "pseudo-mm-drv"
 	// metrics
-	SwitchLatencyMetric    = "switch-latency"
-	SwitchCountMetric      = "switch-count"
-	StartNewLatencyMetric  = "start-new-latency"
-	StartNewCountMetric    = "start-new-count"
-	ReuseCountMetric       = "reuse-count"
-	ReuseLatencyMetric     = "reuse-latency"
-	InvokeCountMetric      = "invoke-count"
-	PrepareSwitchFSLatency = "prepare-switch-fs-latency"
-	CRIUSwrkLatencyMetric  = "criu-swrk-latency"
-	CRIUHandleNsMetric     = "criu-handle-ns-latency"
-	SwitchKillMetric       = "criu-switch-kill-latency"
-	CRIUSwrkCmdStartMetric = "criu-cmd-start-latency"
-	ExecLatencyMetric      = "exec-latency"
+	SwitchLatencyMetric       = "switch-latency"
+	SwitchCountMetric         = "switch-count"
+	StartNewLatencyMetric     = "start-new-latency"
+	StartNewCountMetric       = "start-new-count"
+	ReuseCountMetric          = "reuse-count"
+	ReuseLatencyMetric        = "reuse-latency"
+	InvokeCountMetric         = "invoke-count"
+	PrepareSwitchFSLatency    = "prepare-switch-fs-latency"
+	CRIUSwrkLatencyMetric     = "criu-swrk-latency"
+	CRIUHandleNsMetric        = "criu-handle-ns-latency"
+	SwitchKillMetric          = "criu-switch-kill-latency"
+	CRIUSwrkCmdStartMetric    = "criu-cmd-start-latency"
+	StartNewExecLatencyMetric = "start-new-exec-latency"
+	SwitchExecLatencyMetric   = "switch-exec-latency"
+	ReuseExecLatencyMetric    = "reuse-exec-latency"
+	InitNetworkOverhead       = "network-overhead"
+	End2EndLatency            = "end-to-end-latency"
 
 	// NOTE by huang-jl: only the following params need be tuned
 	DefaultDaxDevicePath   = "/dev/dax0.1"
@@ -57,14 +61,15 @@ const (
 	BaselineGCInterval  = 5 * time.Second
 	BaselineGCCriterion = 10
 
-	PopulateCtrNum = 80
+	PopulateCtrNum      = 80
+	FaasnapInitNetnsNum = 80
 
-	StartNewCtrConcurrencyLimit   = 10
-	KillCtrConcurrencyLimit       = 6
+	StartNewCtrConcurrencyLimit = 10
+	KillCtrConcurrencyLimit     = 6
 
 	// default memory bound is 32 GB
 	DefaultMemoryBound int64 = 32
 
 	// FaasnapSnapshotIdFile is the file path to load snapshot ids for Faasnap
-	FaasnapSnapshotIdFile = "/mnt/data/faasnap/snapshot/snapshots.json"
+	FaasnapSnapshotIdFile = "/root/faasnap/snapshot/snapshots.json"
 )

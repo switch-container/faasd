@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"time"
 
 	"github.com/openfaas/faas-provider/types"
@@ -68,8 +69,6 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 			if enqueue {
 				// if send to channel, then we pop it from toBeGC
 				toBeGC = toBeGC[1:]
-				bglogger.Debug().Str("instance id", instance.GetInstanceID()).
-					Msg("gc request has been issued")
 			} else {
 				// if channel if full, we buffer it until next round to retry
 				// the main idea here is that we should not block this goroutine
@@ -143,5 +142,49 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 		m.PushIntoGlobalLRU(instance)
 		bglogger.Debug().Err(err).Str("instance id", instance.GetInstanceID()).
 			Msg("PopulateCtrBackgroundTask cold start succeed")
+	}
+}
+
+type FillFaasnapNetworkBackgroundTask struct {
+	num int
+}
+
+func NewFillFaasnapNetworkBackgroundTask(num int) FillFaasnapNetworkBackgroundTask {
+	return FillFaasnapNetworkBackgroundTask{num}
+}
+
+func (t FillFaasnapNetworkBackgroundTask) Run(m *LambdaManager) {
+	if m.Runtime.fnm == nil {
+		bglogger.Error().Msg("FaasnapNetworkManager is nil, cannot fill network for faasnap")
+		return
+	}
+	netNss := make([]string, 0, t.num)
+	var (
+		netns   string
+		isNewns bool
+		err     error
+	)
+	for i := 0; i < t.num; i++ {
+		// this closure is just used to defer cancel()
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			netns, isNewns, err = m.Runtime.fnm.GetNetwork(ctx)
+			if err != nil {
+				bglogger.Err(err).Msg("FillFaasnapNetworkBackgroundTask get network err")
+			} else if err := ctx.Err(); err != nil {
+				bglogger.Err(err).Msg("FillFaasnapNetworkBackgroundTask GetNetwork timeout")
+			}
+		}()
+		if err != nil {
+			return
+		}
+		if !isNewns {
+			bglogger.Warn().Msg("FillFaasnapNetworkBackgroundTask GetNetwork() not create but reuse")
+		}
+		netNss = append(netNss, netns)
+	}
+	for _, netNs := range netNss {
+		m.Runtime.fnm.PutNetwork(netNs)
 	}
 }

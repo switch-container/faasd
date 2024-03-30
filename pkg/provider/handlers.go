@@ -37,50 +37,71 @@ const (
 
 // NOTE by huang-jl:
 // prepareDur only account for MakeCtrInstanceFor(), i.e., start a container
-// execDur account for e2e execution (including retry latency, i.e., the latency of lambda initialization)
+// proxyReqDur includes retry latency
 // retry is the retry times in proxyReq (mainly happend when cold start,
 //
 //	that the http server in container is not ready)
-func recordStartupMetric(prepareDur time.Duration, execDur time.Duration, retry int, instance *CtrInstance) error {
-	retryDur := time.Duration(retry) * retryInterval
-	startupDur := prepareDur + retryDur
+func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, retry int, instance *CtrInstance) error {
+	var (
+		startupLatMetric string
+		startupLat       time.Duration
+		execLatMetric    string
+		execLat          time.Duration
+		retryDur         = time.Duration(retry) * retryInterval
+		lambdaName       = ServiceName2LambdaName(instance.ServiceName)
+	)
 	// here startup, reuse, switch latency only care about lambda
-	lambdaName := ServiceName2LambdaName(instance.ServiceName)
 	switch instance.depolyDecision {
-	case COLD_START, CR_START, CR_LAZY_START, FAASNAP_START:
-		if err := metrics.GetMetricLogger().Emit(pkg.StartNewLatencyMetric, lambdaName, startupDur); err != nil {
+	case COLD_START:
+		// cold start: retry time should be account as startup, instead of exec
+		startupLat = prepareDur + retryDur
+		execLat = proxyReqDur - retryDur
+		startupLatMetric = pkg.StartNewLatencyMetric
+		execLatMetric = pkg.StartNewExecLatencyMetric
+		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, lambdaName, 1); err != nil {
 			return err
 		}
+	case CR_START, CR_LAZY_START, FAASNAP_START:
+		// for CR: retry time should be account as execution instead of startup
+		startupLat = prepareDur
+		execLat = proxyReqDur
+		startupLatMetric = pkg.StartNewLatencyMetric
+		execLatMetric = pkg.StartNewExecLatencyMetric
 		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, lambdaName, 1); err != nil {
 			return err
 		}
 	case REUSE:
 		// NOTE by huang-jl we need reuse latency metric, since in current implementation, cold start
-		// may failed due to concurrency limitation, so even reuse may consume some time (e.g., waiting to retry)
-		if startupDur > time.Millisecond {
-			if err := metrics.GetMetricLogger().Emit(pkg.ReuseLatencyMetric, lambdaName, startupDur); err != nil {
-				return err
-			}
-		}
+		// may failed due to concurrency limitation, so even reuse may consume some time to prepare
+		// (e.g., waiting to retry)
+		startupLat = prepareDur
+		execLat = proxyReqDur
+		startupLatMetric = pkg.ReuseLatencyMetric
+		execLatMetric = pkg.ReuseExecLatencyMetric
 		if err := metrics.GetMetricLogger().Emit(pkg.ReuseCountMetric, lambdaName, 1); err != nil {
 			return err
 		}
 	case SWITCH:
-		if err := metrics.GetMetricLogger().Emit(pkg.SwitchLatencyMetric, lambdaName, startupDur); err != nil {
-			return err
-		}
+		startupLat = prepareDur
+		execLat = proxyReqDur
+		startupLatMetric = pkg.SwitchLatencyMetric
+		execLatMetric = pkg.SwitchExecLatencyMetric
 		if err := metrics.GetMetricLogger().Emit(pkg.SwitchCountMetric, lambdaName, 1); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown decision")
 	}
-	if err := metrics.GetMetricLogger().Emit(pkg.InvokeCountMetric, lambdaName, 1); err != nil {
+	if err := metrics.GetMetricLogger().Emit(startupLatMetric, lambdaName, startupLat); err != nil {
 		return err
 	}
-
-	// execute time is related to serviceName instead of only lambda
-	if err := metrics.GetMetricLogger().Emit(pkg.ExecLatencyMetric, instance.ServiceName, execDur); err != nil {
+	if err := metrics.GetMetricLogger().Emit(execLatMetric, lambdaName, execLat); err != nil {
+		return err
+	}
+	if err := metrics.GetMetricLogger().Emit(pkg.End2EndLatency, lambdaName, startupLat+execLat); err != nil {
+		return err
+	}
+	if err := metrics.GetMetricLogger().Emit(pkg.InvokeCountMetric, lambdaName, 1); err != nil {
 		return err
 	}
 	return nil
@@ -98,7 +119,7 @@ func proxyRequest(ctx context.Context, originalReq *http.Request, proxyClient *h
 	originalReq.Body.Close()
 	// build proxy request
 	pathVars := mux.Vars(originalReq)
-	originalReq.URL.RawQuery += "&function=" + serviceName
+	originalReq.URL.RawQuery += "&function=" + serviceName // this is for faasnap
 	proxyReq, err := buildProxyRequest(originalReq, targetUrl, pathVars["params"])
 	if err != nil {
 		err = errors.Wrapf(err, "Failed to resolve service %s", serviceName)
@@ -141,7 +162,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	var (
 		err           error
 		prepareCtrDur time.Duration
-		execDur       time.Duration
+		proxyReqDur   time.Duration
 	)
 
 	start := time.Now()
@@ -204,11 +225,11 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 		httputil.Errorf(w, http.StatusInternalServerError, "[%s] invoke to %s failed: %s", instanceID, urlStr, err)
 		return
 	}
-	execDur = time.Since(begin)
+	proxyReqDur = time.Since(begin)
 	// NOTE by huang-jl: the startup latency should consists of app initialization time
 	// since we poll for the status of container (i.e. retryInterval), this time is not accurate.
 	// But the intialization time of container typically hundred of ms, so it is ok.
-	if err = recordStartupMetric(prepareCtrDur, execDur, retryTimes, instance); err != nil {
+	if err = recordStartupMetric(prepareCtrDur, proxyReqDur, retryTimes, instance); err != nil {
 		httputil.Errorf(w, http.StatusInternalServerError, "failed to recordStartupMetric for %s: %s", serviceName, err)
 		return
 	}

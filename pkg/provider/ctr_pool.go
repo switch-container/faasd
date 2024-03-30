@@ -2,7 +2,6 @@ package provider
 
 import (
 	"container/heap"
-	"container/list"
 	"context"
 	"fmt"
 	"sync"
@@ -222,7 +221,8 @@ type FaasnapCtr struct {
 	vmId      string
 	Pid       int
 	IpAddress string
-	network   *list.Element
+	network   string // e.g., fc22
+	fnm       *faasnap.FaasnapNetworkManager
 }
 
 func (ctr *FaasnapCtr) GetPid() int {
@@ -239,7 +239,7 @@ func (ctr *FaasnapCtr) Kill() error {
 	if err != nil {
 		return err
 	}
-	faasnap.ReleaseNetwork(ctr.network)
+	ctr.fnm.PutNetwork(ctr.network)
 	return nil
 }
 

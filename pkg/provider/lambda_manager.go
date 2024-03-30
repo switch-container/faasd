@@ -15,6 +15,7 @@ import (
 	gocni "github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
+	"github.com/openfaas/faasd/pkg/provider/config"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 )
@@ -65,26 +66,25 @@ func (status ContainerStatus) CanSwitch() bool {
 
 // memBound: the memory bound in bytes
 func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPolicy,
-	memBound int64) (*LambdaManager, error) {
+	config *config.ProviderConfig) (*LambdaManager, error) {
 	rootfsManager, err := NewRootfsManager()
 	if err != nil {
 		return nil, err
 	}
 	checkpointCache := NewCheckpointCache()
 	m := &LambdaManager{
-		pools:  map[string]*CtrPool{},
-		policy: policy,
-		Runtime: NewCtrRuntime(client, cni, rootfsManager, checkpointCache,
-			false, pkg.StartNewCtrConcurrencyLimit, pkg.KillCtrConcurrencyLimit),
+		pools:     map[string]*CtrPool{},
+		policy:    policy,
+		Runtime:   NewCtrRuntime(client, cni, rootfsManager, checkpointCache, config),
 		terminate: false,
 		cleanup:   []func(*LambdaManager){killAllInstances},
-		memBound:  NewMemoryBound(memBound),
+		memBound:  NewMemoryBound(config.MemBound),
 		lru:       NewGloablFreePQ(),
 	}
 	m.registerCleanup(func(lm *LambdaManager) {
 		close(lm.Runtime.reapCh)
 		close(lm.Runtime.workerCh)
-    close(lm.Runtime.killCh)
+		close(lm.Runtime.killCh)
 	})
 	// make sure the following dir exist
 	for _, dir := range []string{
@@ -188,7 +188,7 @@ func (m *LambdaManager) SwitchStart(depolyRes DeployResult, id uint64) (*CtrInst
 	pool := depolyRes.targetPool
 	instance, err := m.Runtime.SwitchStart(pool.requirement, id, depolyRes.instance)
 	if err == nil {
-		lmlogger.Debug().Int64("memory left", m.memBound.Left()).Str("service name", pool.serviceName).
+		lmlogger.Debug().Int64("mem left", m.memBound.Left()).Str("service name", pool.serviceName).
 			Uint64("id", id).Msg("switch ctr succeed")
 	}
 	return instance, err
@@ -253,7 +253,7 @@ restart:
 		}
 		if err == nil {
 			lmlogger.Debug().Str("service", serviceName).Uint64("id", id).Strs("kill instances", killIDs).
-				Int64("memory left", m.memBound.Left()).Msg("start new instance succeed!")
+				Int64("mem left", m.memBound.Left()).Msg("start new instance succeed!")
 		}
 		return instance, err
 	}

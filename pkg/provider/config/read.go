@@ -10,8 +10,13 @@ import (
 
 type ProviderConfig struct {
 	// Sock is the address of the containerd socket
-	Sock          string
-	CheckpointDir string
+	Sock             string
+	CheckpointDir    string
+	AlwaysPull       bool
+	StartConcurrency int
+	KillConcurrency  int
+	EnableFaasnap    bool
+	MemBound         int64
 }
 
 // ReadFromEnv loads the FaaSConfig and the Containerd specific config form the env variables
@@ -37,8 +42,11 @@ func ReadFromEnv(hasEnv types.HasEnv) (*types.FaaSConfig, *ProviderConfig, error
 		return nil, nil, fmt.Errorf("checkpoint_dir env variable could not be null")
 	}
 	providerConfig := &ProviderConfig{
-		Sock:          types.ParseString(hasEnv.Getenv("sock"), "/run/containerd/containerd.sock"),
-		CheckpointDir: checkpointDir,
+		Sock:             types.ParseString(hasEnv.Getenv("sock"), "/run/containerd/containerd.sock"),
+		CheckpointDir:    checkpointDir,
+		AlwaysPull:       false, // always not pull
+		KillConcurrency:  pkg.KillCtrConcurrencyLimit,
+		StartConcurrency: pkg.StartNewCtrConcurrencyLimit,
 	}
 
 	return config, providerConfig, nil

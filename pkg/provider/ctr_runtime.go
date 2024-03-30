@@ -24,6 +24,8 @@ import (
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
 	cninetwork "github.com/openfaas/faasd/pkg/cninetwork"
+	"github.com/openfaas/faasd/pkg/metrics"
+	"github.com/openfaas/faasd/pkg/provider/config"
 	"github.com/openfaas/faasd/pkg/provider/switcher"
 	"github.com/openfaas/faasd/pkg/service"
 	"github.com/pkg/errors"
@@ -64,13 +66,18 @@ type CtrRuntime struct {
 	alwaysPull      bool
 	rootfsManager   *RootfsManager
 	checkpointCache *CheckpointCache
+	fnm             *faasnap.FaasnapNetworkManager
 	killCh          chan<- KillCtrReq
 	workerCh        chan<- StartNewCtrReq
 	reapCh          chan<- int
 }
 
 func NewCtrRuntime(client *containerd.Client, cni gocni.CNI, rootfsManager *RootfsManager,
-	checkpointCache *CheckpointCache, alwaysPull bool, startConcurrency, killConcurrency int) CtrRuntime {
+	checkpointCache *CheckpointCache, config *config.ProviderConfig) CtrRuntime {
+	var fnm *faasnap.FaasnapNetworkManager
+	if config.EnableFaasnap {
+		fnm = faasnap.NewFaasnapNetworkManager()
+	}
 	// TODO(huang-jl) Is an 2-element channel enough ?
 	workerCh := make(chan StartNewCtrReq, 2)
 	reapCh := make(chan int, 1024)
@@ -80,17 +87,18 @@ func NewCtrRuntime(client *containerd.Client, cni gocni.CNI, rootfsManager *Root
 	r := CtrRuntime{
 		Client:          client,
 		cni:             cni,
-		alwaysPull:      alwaysPull,
+		alwaysPull:      config.AlwaysPull,
 		rootfsManager:   rootfsManager,
 		checkpointCache: checkpointCache,
 		killCh:          killCh,
 		workerCh:        workerCh,
 		reapCh:          reapCh,
+		fnm:             fnm,
 	}
-	for i := 0; i < startConcurrency; i++ {
+	for i := 0; i < config.StartConcurrency; i++ {
 		go r.startWork(workerCh)
 	}
-	for i := 0; i < killConcurrency; i++ {
+	for i := 0; i < config.KillConcurrency; i++ {
 		go r.killWork(killCh)
 	}
 	go r.reap(reapCh)
@@ -119,10 +127,14 @@ func (r CtrRuntime) KillInstanceAsync(instance *CtrInstance, blockUntilEnqueue b
 	}
 	if blockUntilEnqueue {
 		r.killCh <- req
+		crlogger.Debug().Str("service name", instance.ServiceName).
+			Str("instance id", instance.GetInstanceID()).Msg("kill instance async enqueue")
 		return true
 	}
 	select {
 	case r.killCh <- req:
+		crlogger.Debug().Str("service name", instance.ServiceName).
+			Str("instance id", instance.GetInstanceID()).Msg("kill instance async enqueue")
 		return true
 	default:
 		return false
@@ -151,10 +163,10 @@ func (r CtrRuntime) killWork(ch <-chan KillCtrReq) {
 		instance := killReq.instance // supposed not to be empty
 		instanceID := instance.GetInstanceID()
 		if err = r.killInstance(instance); err != nil {
-			bglogger.Error().Err(err).Str("service name", instance.ServiceName).
+			crlogger.Error().Err(err).Str("service name", instance.ServiceName).
 				Str("instance", instanceID).Msg("kill instance failed")
 		} else {
-			bglogger.Debug().Str("service name", instance.ServiceName).
+			crlogger.Info().Str("service name", instance.ServiceName).
 				Str("instance", instanceID).Msg("kill instance succeed")
 		}
 		if killReq.notify != nil {
@@ -539,9 +551,17 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	api := client.DefaultApi
 
 	// find a free namespace
-	namespace, namespaceElementPtr, err := faasnap.GetFreeNetwork(ctx)
+	start := time.Now()
+	netNs, isNewNs, err := r.fnm.GetNetwork(ctx)
 	if err != nil {
-		return nil, errors.Errorf("failed to get free network: %v", err)
+		return nil, errors.Errorf("failed to get network from FaasnapNetworkManager: %v", err)
+	}
+	if isNewNs {
+		dur := time.Since(start)
+		if err := metrics.GetMetricLogger().Emit(pkg.InitNetworkOverhead, "faasnap", dur); err != nil {
+			crlogger.Err(err).Msg("log metric for create faasnap network failed")
+		}
+		crlogger.Debug().Dur("ovehead", dur).Msg("create faasnap network")
 	}
 
 	snapshotId := req.SnapshotIds[0]
@@ -549,7 +569,7 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 		FuncName:       req.Service,
 		SsId:           snapshotId,
 		EnableReap:     false,
-		Namespace:      namespace,
+		Namespace:      netNs,
 		UseMemFile:     false,
 		OverlayRegions: true,
 		UseWsFile:      true,
@@ -565,7 +585,8 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 		vmId:      vm.VmId,
 		Pid:       int(vm.Pid),
 		IpAddress: vm.Ip,
-		network:   namespaceElementPtr,
+		network:   netNs,
+		fnm:       r.fnm,
 	}, nil
 }
 
@@ -701,7 +722,12 @@ func (r CtrRuntime) createTask(ctx context.Context, container containerd.Contain
 	start := time.Now()
 	labels := map[string]string{}
 	_, err := cninetwork.CreateCNINetwork(ctx, r.cni, task, labels)
-	crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
+	dur := time.Since(start)
+	if err := metrics.GetMetricLogger().Emit(pkg.InitNetworkOverhead, "cni", dur); err != nil {
+		crlogger.Err(err).Msg("log metric for create cni network failed")
+	} else {
+		crlogger.Debug().Dur("overhead", time.Since(start)).Msg("create cni network")
+	}
 
 	if err != nil {
 		return err
@@ -770,7 +796,7 @@ func (r CtrRuntime) createTaskByCRIU(ctx context.Context, container containerd.C
 	return nil
 }
 
-func (r CtrRuntime) startLazyPageDaemon(ctx context.Context, serviceName, instanceID string) error {
+func (r CtrRuntime) startLazyPageDaemon(_ context.Context, serviceName, instanceID string) error {
 	workDir := path.Join(pkg.FaasdCRIUResotreWorkPrefix, instanceID)
 	imgDir := path.Join(r.checkpointCache.checkpointDir, serviceName)
 	args := []string{

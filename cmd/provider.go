@@ -46,6 +46,7 @@ func makeProviderCmd() *cobra.Command {
 	command.Flags().Int("gc", pkg.BaselineGCCriterion, `gc criterion in minutes`)
 	command.Flags().Bool("no-reuse", false, `Set treu to force each invocation do not reuse within function pool (either cold start or switch)`)
 	command.Flags().Int("idle-num", pkg.PopulateCtrNum, `Number of conatiners to populate in background (only valid for non-baseline, i.e., switch method)`)
+	command.Flags().Int("faasnap-init-netns-num", pkg.FaasnapInitNetnsNum, `Number of net namespace pre-created for faasnap, only valid in faasnap mode`)
 
 	command.RunE = func(_ *cobra.Command, _ []string) error {
 		pullPolicy, flagErr := command.Flags().GetString("pull-policy")
@@ -76,6 +77,10 @@ func makeProviderCmd() *cobra.Command {
 		if flagErr != nil {
 			return flagErr
 		}
+		faasnapInitNetnsNum, flagErr := command.Flags().GetInt("faasnap-init-netns-num")
+		if flagErr != nil {
+			return flagErr
+		}
 		memoryBound, flagErr := command.Flags().GetInt64("mem")
 		if flagErr != nil {
 			return flagErr
@@ -100,11 +105,15 @@ func makeProviderCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		if startMethod == "faasnap" {
+			providerConfig.EnableFaasnap = true
+		}
+		providerConfig.MemBound = memoryBound
 
 		log.Info().Int64("mem bound", memoryBound).Str("start method", startMethod).Bool("baseline", isBaseline).
 			Bool("no reuse", noReuse).Bool("no background task", noBgTask).Int("gc", gcMinute).
-			Int("populate ctr", populateCtrNum).Str("Service Timeout", config.WriteTimeout.String()).
-			Msg("faasd-provider starting...")
+			Int("faasnap init netns num", faasnapInitNetnsNum).Int("populate ctr", populateCtrNum).
+			Str("Service Timeout", config.WriteTimeout.String()).Msg("faasd-provider starting...")
 		printVersion()
 
 		wd, err := os.Getwd()
@@ -146,17 +155,22 @@ func makeProviderCmd() *cobra.Command {
 				provider.NewInstanceGCBackgroundTask(pkg.BaselineGCInterval,
 					time.Duration(gcMinute)*time.Minute),
 			}
+			// TODO(huang-jl): use a separate args for the number of network
+			// to be filled in the background
+			if providerConfig.EnableFaasnap {
+				bgTask = append(bgTask, provider.NewFillFaasnapNetworkBackgroundTask(faasnapInitNetnsNum))
+			}
 			baselinePolicy, err := provider.NewBaselinePolicy(startMethod, noReuse)
 			if err != nil {
 				return err
 			}
-			m, err = provider.NewLambdaManager(client, cni, baselinePolicy, memoryBound)
+			m, err = provider.NewLambdaManager(client, cni, baselinePolicy, providerConfig)
 		} else {
 			bgTask = []provider.BackgroundTask{
 				provider.NewPopulateCtrBackgroundTask(populateCtrNum),
 			}
 			naiveSwitchPolicy := provider.NewNaiveSwitchPolicy(noReuse)
-			m, err = provider.NewLambdaManager(client, cni, naiveSwitchPolicy, memoryBound)
+			m, err = provider.NewLambdaManager(client, cni, naiveSwitchPolicy, providerConfig)
 		}
 		if err != nil {
 			return err
@@ -183,13 +197,18 @@ func makeProviderCmd() *cobra.Command {
 			{pkg.ReuseLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.InvokeCountMetric, metrics.SINGLE_COUNTER},
 
+			{pkg.StartNewExecLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.ReuseExecLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.SwitchExecLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.End2EndLatency, metrics.LATENCY_METRIC},
+
 			{pkg.PrepareSwitchFSLatency, metrics.LATENCY_METRIC},
 			{pkg.CRIUSwrkLatencyMetric, metrics.LATENCY_METRIC},
 			{pkg.CRIUHandleNsMetric, metrics.LATENCY_METRIC},
 			{pkg.SwitchKillMetric, metrics.LATENCY_METRIC},
 			{pkg.CRIUSwrkCmdStartMetric, metrics.LATENCY_METRIC},
 
-			{pkg.ExecLatencyMetric, metrics.LATENCY_METRIC},
+			{pkg.InitNetworkOverhead, metrics.LATENCY_METRIC},
 		} {
 			metricLogger.RegisterMetric(m.name, m.ty)
 		}
