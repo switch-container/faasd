@@ -107,32 +107,32 @@ func (switcher *Switcher) doSwitch() error {
 	var extraFiles []*os.File
 	defer func() {
 		// close all fds
-		start := time.Now()
+		// start := time.Now()
 		for _, fd := range extraFiles {
 			fd.Close()
 		}
-		swlogger.Debug().Dur("overhead", time.Since(start)).
-			Str("lambda name", lambdaName).Msg("close fd for criu switch")
+		// swlogger.Debug().Dur("overhead", time.Since(start)).
+		// 	Str("lambda name", lambdaName).Msg("close fd for criu switch")
 	}()
 
-	start := time.Now()
+	// start := time.Now()
 	// [40us]
 	if err = handleSwitchNamespaces(rpcOpts, pid, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle switch namespace failed")
 	}
 	// metrics.GetMetricLogger().Emit(pkg.CRIUHandleNsMetric, switcher.checkpoint, time.Since(start))
-	swlogger.Debug().Dur("overhead", time.Since(start)).
-		Str("lambda name", lambdaName).Msg("handle switch namespace")
+	// swlogger.Debug().Dur("overhead", time.Since(start)).
+	// 	Str("lambda name", lambdaName).Msg("handle switch namespace")
 
-	start = time.Now()
+	// start = time.Now()
 	// [10us]
 	if err = handlePseudoMMDrv(rpcOpts, &extraFiles); err != nil {
 		return errors.Wrap(err, "handle pseudo mm drv failed")
 	}
-	swlogger.Debug().Dur("overhead", time.Since(start)).
-		Str("lambda name", lambdaName).Msg("handle pseudo mm drv")
+	// swlogger.Debug().Dur("overhead", time.Since(start)).
+	// 	Str("lambda name", lambdaName).Msg("handle pseudo mm drv")
 
-	start = time.Now()
+	// start = time.Now()
 	// [50us]
 	if err = applyCgroup(pid, rpcOpts, criuOpts); err != nil {
 		return errors.Wrap(err, "apply cgroup failed")
@@ -140,8 +140,8 @@ func (switcher *Switcher) doSwitch() error {
 	if criuOpts.CgroupFile != nil {
 		defer criuOpts.CgroupFile.Close()
 	}
-	swlogger.Debug().Dur("overhead", time.Since(start)).
-		Str("lambda name", lambdaName).Msg("apply cgroup")
+	// swlogger.Debug().Dur("overhead", time.Since(start)).
+	// 	Str("lambda name", lambdaName).Msg("apply cgroup")
 
 	// TODO(huang-jl) kill process in another goroutine (async)
 	// kill process sometimes takes about 4ms - 5ms.
@@ -149,7 +149,7 @@ func (switcher *Switcher) doSwitch() error {
 	// But pay attention: if we do it async, we have to use another
 	// port (e.g., 5001) for restored process. Or else it may conflict
 	// with original process in the same net namespace.
-	start = time.Now()
+	start := time.Now()
 	if err = syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		return errors.Wrapf(err, "kill original process %d failed", pid)
 	}

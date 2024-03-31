@@ -184,6 +184,7 @@ func (t FillFaasnapNetworkBackgroundTask) Run(m *LambdaManager) {
 		}
 		netNss = append(netNss, netns)
 	}
+	bglogger.Debug().Int("num", len(netNss)).Msg("FillFaasnapNetworkBackgroundTask precreate network ns")
 	for _, netNs := range netNss {
 		m.Runtime.fnm.PutNetwork(netNs)
 	}

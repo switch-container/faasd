@@ -71,5 +71,5 @@ const (
 	DefaultMemoryBound int64 = 32
 
 	// FaasnapSnapshotIdFile is the file path to load snapshot ids for Faasnap
-	FaasnapSnapshotIdFile = "/root/faasnap/snapshot/snapshots.json"
+	FaasnapSnapshotIdFile = "/mnt/cxl-tmp/faasnap/snapshot/snapshots.json"
 )

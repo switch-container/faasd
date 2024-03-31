@@ -83,7 +83,7 @@ func redirectSwitchOutput(cmd *exec.Cmd, opts *CriuOpts) error {
 }
 
 func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFiles []*os.File) error {
-	start := time.Now()
+	// start := time.Now()
 	if opts == nil {
 		return fmt.Errorf("CriuOpts cannot be null")
 	}
@@ -133,7 +133,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 
 	// [from beginning to here: xx - xxx us]
 	// logEntry := logrus.WithField("prepare cmd", time.Since(start).String())
-	start = time.Now()
+  start := time.Now()
 	// log.Printf("start criu swrk ts: %d", start.UnixMicro())
 	// [start itself: 391us]
 	if err := cmd.Start(); err != nil {
@@ -164,7 +164,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		// log.Printf("defer function took %s", time.Since(start_))
 	}()
 
-	swlogger.Debug().Str("mode", req.GetType().String()).Msg("CRIU mode")
+	// swlogger.Debug().Str("mode", req.GetType().String()).Msg("CRIU mode")
 
 	// [reflect took: 53.6ms]
 	// if logrus.GetLevel() >= logrus.DebugLevel &&
@@ -189,14 +189,14 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		return err
 	}
 
-	start = time.Now()
+	// start = time.Now()
 	_, err = criuClientCon.Write(data)
 	if err != nil {
 		return err
 	}
 
-	swlogger.Debug().Dur("overhead", time.Since(start)).Msg("write criu request")
-	start = time.Now()
+	// swlogger.Debug().Dur("overhead", time.Since(start)).Msg("write criu request")
+	// start = time.Now()
 
 	buf := make([]byte, 10*4096)
 	oob := make([]byte, 4096)
@@ -234,7 +234,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		t := resp.GetType()
 		switch {
 		case t == criurpc.CriuReqType_FEATURE_CHECK:
-			swlogger.Debug().Str("resp", resp.String()).Msg("Feature check")
+			// swlogger.Debug().Str("resp", resp.String()).Msg("Feature check")
 			// criuFeatures = resp.GetFeatures()
 		case t == criurpc.CriuReqType_NOTIFY:
 			// log.Printf("until recv notify spent %s, ", time.Since(start))
@@ -257,8 +257,8 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 			}
 			continue
 		case t == criurpc.CriuReqType_RESTORE:
-			swlogger.Debug().Dur("overhead", time.Since(start)).
-				Msg("receive RESTORE response from loop start")
+			// swlogger.Debug().Dur("overhead", time.Since(start)).
+			// 	Msg("receive RESTORE response from loop start")
 		case t == criurpc.CriuReqType_DUMP:
 		case t == criurpc.CriuReqType_PRE_DUMP:
 		default:
@@ -268,9 +268,9 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		break
 	}
 
-	swlogger.Debug().Dur("overhead", time.Since(start)).Msg("break from criu conn loop")
+	// swlogger.Debug().Dur("overhead", time.Since(start)).Msg("break from criu conn loop")
 
-	start = time.Now()
+	// start = time.Now()
 	_ = criuClientCon.CloseWrite()
 	// cmd.Wait() waits cmd.goroutines which are used for proxying file descriptors.
 	// Here we want to wait only the CRIU process.
@@ -279,7 +279,7 @@ func (switcher *Switcher) criuSwrk(req *criurpc.CriuReq, opts *CriuOpts, extraFi
 		return errors.Wrap(err, "criuProcess.Wait()")
 	}
 
-	swlogger.Debug().Dur("overhead", time.Since(start)).Msg("wait for criu")
+	// swlogger.Debug().Dur("overhead", time.Since(start)).Msg("wait for criu")
 
 	// In pre-dump mode CRIU is in a loop and waits for
 	// the final DUMP command.
@@ -300,7 +300,7 @@ func (switcher *Switcher) criuNotifications(resp *criurpc.CriuResp, cmd *exec.Cm
 		return fmt.Errorf("invalid response: %s", resp.String())
 	}
 	script := notify.GetScript()
-	swlogger.Debug().Str("notify", script).Msg("criu notification")
+	// swlogger.Debug().Str("notify", script).Msg("criu notification")
 	switch script {
 	case "post-restore":
 		pid := notify.GetPid()
