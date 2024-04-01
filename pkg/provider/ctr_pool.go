@@ -218,6 +218,7 @@ func (ctr *ContainerdCtr) Switch(config switcher.SwitcherConfig) error {
 }
 
 type FaasnapCtr struct {
+	isReap    bool
 	vmId      string
 	Pid       int
 	IpAddress string

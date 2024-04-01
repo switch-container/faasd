@@ -37,6 +37,7 @@ const (
 	CR_START
 	CR_LAZY_START
 	FAASNAP_START
+	REAP_START
 	REUSE
 	SWITCH
 )
@@ -56,7 +57,7 @@ type DeployResult struct {
 
 func (d DeployResult) applyMemUsage(m *LambdaManager) {
 	switch d.decision {
-	case COLD_START, CR_LAZY_START, CR_START, FAASNAP_START:
+	case COLD_START, CR_LAZY_START, CR_START, FAASNAP_START, REAP_START:
 		m.memBound.AddCtr(d.targetPool.memoryRequirement)
 	case REUSE:
 	case SWITCH:
@@ -192,6 +193,8 @@ func NewBaselinePolicy(defaultStartMethod string, noReuse bool) (BaselinePolicy,
 		decision = CR_LAZY_START
 	case "faasnap":
 		decision = FAASNAP_START
+	case "reap":
+		decision = REAP_START
 	default:
 		return BaselinePolicy{}, errors.Errorf("invalid default start method for baseline: %v", defaultStartMethod)
 	}

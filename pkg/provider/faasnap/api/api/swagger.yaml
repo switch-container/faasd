@@ -225,6 +225,13 @@ paths:
           explode: false
           schema:
             type: string
+        - name: mode
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: string
       requestBody:
         content:
           application/json:

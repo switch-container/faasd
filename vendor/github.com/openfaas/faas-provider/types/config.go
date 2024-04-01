@@ -56,8 +56,6 @@ type FaaSHandlers struct {
 	InvokeFunction http.HandlerFunc
 
 	MetricFunction http.HandlerFunc
-
-	KillAllInstance http.HandlerFunc
 }
 
 // FaaSConfig set config for HTTP handlers

@@ -59,7 +59,7 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 		handlers.Secrets = auth.DecorateWithBasicAuth(handlers.Secrets, credentials)
 		handlers.Logs = auth.DecorateWithBasicAuth(handlers.Logs, credentials)
 		handlers.RegisterFunction = auth.DecorateWithBasicAuth(handlers.RegisterFunction, credentials)
-		// NOTE by huang-jl Invoke, KillAllInstance, Metric, ListCheckpoint function do not need auth for simplicity
+		// NOTE by huang-jl Invoke, Metric, ListCheckpoint function do not need auth for simplicity
 	}
 
 	hm := newHttpMetrics()
@@ -122,9 +122,6 @@ func Serve(handlers *types.FaaSHandlers, config *types.FaaSConfig) {
 	if handlers.ListCheckpoint != nil {
 		r.HandleFunc("/system/checkpoints", handlers.ListCheckpoint).Methods(http.MethodGet)
 	}
-  if handlers.KillAllInstance != nil {
-	  r.HandleFunc("/danger/kill", handlers.KillAllInstance).Methods(http.MethodGet, http.MethodPost, http.MethodPut)
-  }
 
 	r.HandleFunc("/metrics", promhttp.Handler().ServeHTTP)
 

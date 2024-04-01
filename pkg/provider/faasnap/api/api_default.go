@@ -1101,6 +1101,7 @@ func (a *DefaultApiService) SnapshotsSsIdPatch(ctx context.Context, ssId string,
 DefaultApiService
 Load a snapshot
  * @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ * @param mode
  * @param ssId
  * @param optional nil or *DefaultApiSnapshotsSsIdPostOpts - Optional Parameters:
      * @param "Body" (optional.Interface of Invocation) -
@@ -1111,7 +1112,7 @@ type DefaultApiSnapshotsSsIdPostOpts struct {
 	Body optional.Interface
 }
 
-func (a *DefaultApiService) SnapshotsSsIdPost(ctx context.Context, ssId string, localVarOptionals *DefaultApiSnapshotsSsIdPostOpts) (Vm, *http.Response, error) {
+func (a *DefaultApiService) SnapshotsSsIdPost(ctx context.Context, mode string, ssId string, localVarOptionals *DefaultApiSnapshotsSsIdPostOpts) (Vm, *http.Response, error) {
 	var (
 		localVarHttpMethod  = strings.ToUpper("Post")
 		localVarPostBody    interface{}
@@ -1128,6 +1129,7 @@ func (a *DefaultApiService) SnapshotsSsIdPost(ctx context.Context, ssId string, 
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
 
+	localVarQueryParams.Add("mode", parameterToString(mode, ""))
 	// to determine the Content-Type header
 	localVarHttpContentTypes := []string{"application/json"}
 

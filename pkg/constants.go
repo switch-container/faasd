@@ -71,5 +71,7 @@ const (
 	DefaultMemoryBound int64 = 32
 
 	// FaasnapSnapshotIdFile is the file path to load snapshot ids for Faasnap
-	FaasnapSnapshotIdFile = "/root/faasnap/snapshot/snapshots.json"
+	FaasnapSnapshotIdFile = "/root/faasnap/snapshot/snapshots_faasnap.json"
+	// ReapSnapshotIdFile is the file path to load snapshot ids for REAP
+	ReapSnapshotIdFile = "/root/faasnap/snapshot/snapshots_reap.json"
 )

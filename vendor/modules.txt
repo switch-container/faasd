@@ -51,7 +51,7 @@ github.com/beorn7/perks/quantile
 # github.com/cespare/xxhash/v2 v2.2.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
-# github.com/checkpoint-restore/go-criu/v5 v5.3.0 => ../../checkpoint-restore/go-criu/
+# github.com/checkpoint-restore/go-criu/v5 v5.3.0 => ../go-criu/
 ## explicit; go 1.13
 github.com/checkpoint-restore/go-criu/v5/rpc
 # github.com/compose-spec/compose-go v0.0.0-20200528042322-36d8ce368e05
@@ -65,7 +65,7 @@ github.com/compose-spec/compose-go/types
 # github.com/containerd/cgroups v1.1.0
 ## explicit; go 1.17
 github.com/containerd/cgroups/stats/v1
-# github.com/containerd/containerd v1.7.0 => ../../containerd/containerd/
+# github.com/containerd/containerd v1.7.0 => ../containerd/
 ## explicit; go 1.17
 github.com/containerd/containerd
 github.com/containerd/containerd/api/services/containers/v1
@@ -511,8 +511,8 @@ gopkg.in/yaml.v2
 # k8s.io/apimachinery v0.27.3
 ## explicit; go 1.20
 k8s.io/apimachinery/pkg/api/resource
-# github.com/checkpoint-restore/go-criu/v5 => ../../checkpoint-restore/go-criu/
-# github.com/containerd/containerd => ../../containerd/containerd/
+# github.com/checkpoint-restore/go-criu/v5 => ../go-criu/
+# github.com/containerd/containerd => ../containerd/
 # github.com/openfaas/faas-provider => ../faas-provider/
 # github.com/switch-container/faasd/pkg/provider/faasnap => ./pkg/provider/faasnap/
 # github.com/switch-container/faasd/pkg/provider/faasnap/api/swagger => ./pkg/provider/faasnap/api/
