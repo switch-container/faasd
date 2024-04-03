@@ -8,6 +8,8 @@ basic-auth-password
 /secrets
 .vscode
 
+.cache
+
 # Created by https://www.toptal.com/developers/gitignore/api/go,goland,macos
 # Edit at https://www.toptal.com/developers/gitignore?templates=go,goland,macos
 

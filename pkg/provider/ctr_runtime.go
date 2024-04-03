@@ -300,7 +300,9 @@ func (r CtrRuntime) startNewCtr(req StartNewCtrReq) (*CtrInstance, error) {
 	case CR_LAZY_START:
 		ctr, err = r.criuLazyStartInstance(ctx, req)
 	case FAASNAP_START:
-		ctr, err = r.faasnapStartInstance(ctx, req)
+		ctr, err = r.faasnapStartInstance(ctx, req, false)
+	case REAP_START:
+		ctr, err = r.faasnapStartInstance(ctx, req, true)
 	default:
 		return nil, errors.Errorf("invalid decision: %v", req.decision)
 	}
@@ -582,7 +584,7 @@ func (r CtrRuntime) coldStartInstance(ctx context.Context, req StartNewCtrReq) (
 	return r.InitContainerdCtr(ctx, container)
 }
 
-func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq) (Ctr, error) {
+func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq, reap bool) (Ctr, error) {
 	client := swagger.NewAPIClient(swagger.NewConfiguration())
 	api := client.DefaultApi
 
@@ -601,16 +603,25 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	}
 
 	snapshotId := req.SnapshotIds[0]
+	var mode string
 	invocation := swagger.Invocation{
-		FuncName:       req.Service,
-		SsId:           snapshotId,
-		EnableReap:     false,
-		Namespace:      netNs,
-		UseMemFile:     false,
-		OverlayRegions: true,
-		UseWsFile:      true,
+		FuncName:   req.Service,
+		SsId:       snapshotId,
+		Mincore:    -1,
+		EnableReap: reap,
+		Namespace:  netNs,
 	}
-	vm, _, err := api.SnapshotsSsIdPost(ctx, snapshotId, &swagger.DefaultApiSnapshotsSsIdPostOpts{
+	if reap {
+		mode = "reap"
+		invocation.WsSingleRead = true
+		invocation.WsFileDirectIo = false
+	} else {
+		mode = "faasnap"
+		invocation.UseMemFile = false
+		invocation.OverlayRegions = true
+		invocation.UseWsFile = true
+	}
+	vm, _, err := api.SnapshotsSsIdPost(ctx, mode, snapshotId, &swagger.DefaultApiSnapshotsSsIdPostOpts{
 		Body: optional.NewInterface(invocation),
 	})
 	if err != nil {
@@ -618,6 +629,7 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 	}
 
 	return &FaasnapCtr{
+		isReap:    reap,
 		vmId:      vm.VmId,
 		Pid:       int(vm.Pid),
 		IpAddress: vm.Ip,

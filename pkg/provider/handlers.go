@@ -61,7 +61,7 @@ func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, re
 		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, name, 1); err != nil {
 			return err
 		}
-	case CR_START, CR_LAZY_START, FAASNAP_START:
+	case CR_START, CR_LAZY_START, FAASNAP_START, REAP_START:
 		// for CR: retry time should be account as execution instead of startup
 		startupLat = prepareDur
 		execLat = proxyReqDur
@@ -205,7 +205,7 @@ func handleInvokeRequest(w http.ResponseWriter, originalReq *http.Request, m *La
 	if !ok {
 		port = watchdogPort
 	}
-	if p, ok := m.policy.(BaselinePolicy); ok && p.defaultDecision == FAASNAP_START {
+	if p, ok := m.policy.(BaselinePolicy); ok && (p.defaultDecision == FAASNAP_START || p.defaultDecision == REAP_START) {
 		port = "5000"
 	}
 	urlStr := fmt.Sprintf("http://%s:%s", instance.GetIpAddress(), port)

@@ -106,9 +106,15 @@ func NewLambdaManager(client *containerd.Client, cni gocni.CNI, policy DeployPol
 func (m *LambdaManager) RegisterService(req types.FunctionDeployment) error {
 	serviceName := req.Service
 
-	if p, ok := m.policy.(BaselinePolicy); ok && p.defaultDecision == FAASNAP_START {
+	if p, ok := m.policy.(BaselinePolicy); ok && (p.defaultDecision == FAASNAP_START || p.defaultDecision == REAP_START) {
 		// load snapshotids from local file
-		file, err := os.Open(pkg.FaasnapSnapshotIdFile)
+		var filePath string
+		if p.defaultDecision == FAASNAP_START {
+			filePath = pkg.FaasnapSnapshotIdFile
+		} else {
+			filePath = pkg.ReapSnapshotIdFile
+		}
+		file, err := os.Open(filePath)
 		if err != nil {
 			return errors.Wrap(err, "failed to open snapshot file")
 		}
@@ -229,7 +235,7 @@ restart:
 			Str("old service", depolyRes.instance.ServiceName).
 			Uint64("old id", depolyRes.instance.ID).Msg("policy decide to switch ctr")
 		return m.SwitchStart(depolyRes, id)
-	default: // COLD_START, CR_START, CR_LAZY_START, FAASNAP_START
+	default: // COLD_START, CR_START, CR_LAZY_START, FAASNAP_START, REAP_START
 		if id == 0 {
 			id = depolyRes.targetPool.idAllocator.Add(1)
 		}

@@ -105,7 +105,7 @@ func makeProviderCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if startMethod == "faasnap" {
+		if startMethod == "faasnap" || startMethod == "reap" {
 			providerConfig.EnableFaasnap = true
 			providerConfig.StartConcurrency = 6
 		}

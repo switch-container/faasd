@@ -423,7 +423,7 @@ No authorization required
 
 # **SnapshotsSsIdPost**
 
-> Vm SnapshotsSsIdPost(ctx, ssId, optional)
+> Vm SnapshotsSsIdPost(ctx, ssId, mode, optional)
 
 
 Load a snapshot
@@ -434,6 +434,7 @@ Load a snapshot
 --------------|--------------------------------------|-----------------------------------------------------------------------------|----------------------
  **ctx**      | **context.Context**                  | context for authentication, logging, cancellation, deadlines, tracing, etc. 
  **ssId**     | **string**                           |                                                                             |
+ **mode**     | **string**                           |                                                                             |
  **optional** | ***DefaultApiSnapshotsSsIdPostOpts** | optional parameters                                                         | nil if no parameters 
 
 ### Optional Parameters
