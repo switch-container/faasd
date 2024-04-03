@@ -48,7 +48,7 @@ func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, re
 		execLatMetric    string
 		execLat          time.Duration
 		retryDur         = time.Duration(retry) * retryInterval
-		lambdaName       = ServiceName2LambdaName(instance.ServiceName)
+		name             = instance.ServiceName
 	)
 	// here startup, reuse, switch latency only care about lambda
 	switch instance.depolyDecision {
@@ -58,7 +58,7 @@ func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, re
 		execLat = proxyReqDur - retryDur
 		startupLatMetric = pkg.StartNewLatencyMetric
 		execLatMetric = pkg.StartNewExecLatencyMetric
-		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, lambdaName, 1); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, name, 1); err != nil {
 			return err
 		}
 	case CR_START, CR_LAZY_START, FAASNAP_START:
@@ -67,7 +67,7 @@ func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, re
 		execLat = proxyReqDur
 		startupLatMetric = pkg.StartNewLatencyMetric
 		execLatMetric = pkg.StartNewExecLatencyMetric
-		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, lambdaName, 1); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.StartNewCountMetric, name, 1); err != nil {
 			return err
 		}
 	case REUSE:
@@ -78,7 +78,7 @@ func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, re
 		execLat = proxyReqDur
 		startupLatMetric = pkg.ReuseLatencyMetric
 		execLatMetric = pkg.ReuseExecLatencyMetric
-		if err := metrics.GetMetricLogger().Emit(pkg.ReuseCountMetric, lambdaName, 1); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.ReuseCountMetric, name, 1); err != nil {
 			return err
 		}
 	case SWITCH:
@@ -86,22 +86,22 @@ func recordStartupMetric(prepareDur time.Duration, proxyReqDur time.Duration, re
 		execLat = proxyReqDur
 		startupLatMetric = pkg.SwitchLatencyMetric
 		execLatMetric = pkg.SwitchExecLatencyMetric
-		if err := metrics.GetMetricLogger().Emit(pkg.SwitchCountMetric, lambdaName, 1); err != nil {
+		if err := metrics.GetMetricLogger().Emit(pkg.SwitchCountMetric, name, 1); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown decision")
 	}
-	if err := metrics.GetMetricLogger().Emit(startupLatMetric, lambdaName, startupLat); err != nil {
+	if err := metrics.GetMetricLogger().Emit(startupLatMetric, name, startupLat); err != nil {
 		return err
 	}
-	if err := metrics.GetMetricLogger().Emit(execLatMetric, lambdaName, execLat); err != nil {
+	if err := metrics.GetMetricLogger().Emit(execLatMetric, name, execLat); err != nil {
 		return err
 	}
-	if err := metrics.GetMetricLogger().Emit(pkg.End2EndLatency, lambdaName, startupLat+execLat); err != nil {
+	if err := metrics.GetMetricLogger().Emit(pkg.End2EndLatency, name, startupLat+execLat); err != nil {
 		return err
 	}
-	if err := metrics.GetMetricLogger().Emit(pkg.InvokeCountMetric, lambdaName, 1); err != nil {
+	if err := metrics.GetMetricLogger().Emit(pkg.InvokeCountMetric, name, 1); err != nil {
 		return err
 	}
 	return nil

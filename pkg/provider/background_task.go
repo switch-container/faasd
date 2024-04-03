@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/openfaas/faas-provider/types"
@@ -17,9 +18,12 @@ var bglogger = log.With().
 // in faasd system.
 // For now, the main use case is container gc for baselines
 
-// each task will be running is seperate goroutine
+// each task will be running in seperate goroutine
+//
+// If return error, the faasd provider will stop, so
+// only return non-recoverable errors.
 type BackgroundTask interface {
-	Run(m *LambdaManager)
+	Run(m *LambdaManager) error
 }
 
 type InstanceGCBackgroundTask struct {
@@ -34,7 +38,7 @@ func NewInstanceGCBackgroundTask(interval, criterion time.Duration) InstanceGCBa
 	}
 }
 
-func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
+func (t InstanceGCBackgroundTask) Run(m *LambdaManager) error {
 	var toBeGC []*CtrInstance
 	for !m.terminate {
 		time.Sleep(t.interval)
@@ -62,6 +66,7 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 			m.memBound.RemoveCtr(pool.memoryRequirement)
 		}
 
+		bglogger.Debug().Int("gc queue size", len(toBeGC)).Msg("GC Task kick off!")
 		// step 2: start gc
 		for len(toBeGC) > 0 {
 			instance := toBeGC[0]
@@ -78,6 +83,7 @@ func (t InstanceGCBackgroundTask) Run(m *LambdaManager) {
 			}
 		}
 	}
+	return nil
 }
 
 // populate `num` containers with the type of `baseCtrSpec`
@@ -106,10 +112,10 @@ func NewPopulateCtrBackgroundTask(num int) PopulateCtrBackgroundTask {
 	}
 }
 
-func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
+func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) error {
 	if err := m.RegisterService(t.baseCtrSpec); err != nil {
 		bglogger.Error().Err(err).Msg("register base ctr faild!")
-		return
+		return err
 	}
 
 	serviceName := t.baseCtrSpec.Service
@@ -117,7 +123,7 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 	if err != nil {
 		bglogger.Error().Err(err).Str("service name", serviceName).
 			Msg("PopulateCtrBackgroundTask get ctr pool failed")
-
+		return err
 	}
 
 	bglogger.Debug().Int("num", t.num).Msg("start populate dummy containers...")
@@ -135,7 +141,7 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 		} else if err != nil {
 			bglogger.Err(err).Str("lambda", serviceName).
 				Msg("PopulateCtrBackgroundTask cold start failed")
-			break
+			return err
 		}
 		m.memBound.AddCtr(pool.memoryRequirement)
 		pool.PushIntoFree(instance)
@@ -143,6 +149,7 @@ func (t PopulateCtrBackgroundTask) Run(m *LambdaManager) {
 		bglogger.Debug().Err(err).Str("instance id", instance.GetInstanceID()).
 			Msg("PopulateCtrBackgroundTask cold start succeed")
 	}
+	return nil
 }
 
 type FillFaasnapNetworkBackgroundTask struct {
@@ -153,17 +160,17 @@ func NewFillFaasnapNetworkBackgroundTask(num int) FillFaasnapNetworkBackgroundTa
 	return FillFaasnapNetworkBackgroundTask{num}
 }
 
-func (t FillFaasnapNetworkBackgroundTask) Run(m *LambdaManager) {
-	if m.Runtime.fnm == nil {
-		bglogger.Error().Msg("FaasnapNetworkManager is nil, cannot fill network for faasnap")
-		return
-	}
-	netNss := make([]string, 0, t.num)
+func (t FillFaasnapNetworkBackgroundTask) Run(m *LambdaManager) (err error) {
 	var (
 		netns   string
 		isNewns bool
-		err     error
 	)
+	if m.Runtime.fnm == nil {
+		err = fmt.Errorf("FaasnapNetworkManager is nil, cannot fill network for faasnap")
+		bglogger.Err(err).Send()
+		return
+	}
+	netNss := make([]string, 0, t.num)
 	for i := 0; i < t.num; i++ {
 		// this closure is just used to defer cancel()
 		func() {
@@ -188,4 +195,5 @@ func (t FillFaasnapNetworkBackgroundTask) Run(m *LambdaManager) {
 	for _, netNs := range netNss {
 		m.Runtime.fnm.PutNetwork(netNs)
 	}
+	return
 }

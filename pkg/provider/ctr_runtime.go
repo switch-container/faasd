@@ -211,10 +211,46 @@ func (r CtrRuntime) reap(reapCh <-chan int) {
 
 // This is the worker that cold start container
 func (r CtrRuntime) startWork(workerCh <-chan StartNewCtrReq) {
+	var (
+		stage          = 0
+		lastActiveTime = time.Now()
+		dur            time.Duration
+	)
 	for req := range workerCh {
+		if r.fnm != nil {
+			dur = time.Since(lastActiveTime)
+		}
 		instance, err := r.startNewCtr(req)
 		res := StartNewCtrRes{instance: instance, err: err}
 		req.notify <- res
+		if r.fnm != nil {
+			// we are using faasnap:
+			// as faasnap start latency is relatively low
+			// if start with high concurrency, it might overwhelm
+			// the system
+			switch stage {
+			case 0:
+				time.Sleep(100 * time.Millisecond)
+				lastActiveTime = time.Now()
+				stage += 1
+			default:
+				if dur >= 100*time.Millisecond {
+					// we wait for at least 100 ms to get a new start request
+					// which means the system load is relatively low
+					stage -= 1
+					lastActiveTime = time.Now()
+				} else {
+					// we get a new request within 200ms
+					// system startup pressure is high
+					time.Sleep((1 << stage) * 100 * time.Millisecond)
+					lastActiveTime = time.Now()
+					stage += 1
+					if stage > 3 {
+						stage = 3
+					}
+				}
+			}
+		}
 	}
 }
 

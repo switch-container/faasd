@@ -61,7 +61,7 @@ const (
 	BaselineGCInterval  = 5 * time.Second
 	BaselineGCCriterion = 10
 
-	PopulateCtrNum      = 80
+	PopulateCtrNum      = 70
 	FaasnapInitNetnsNum = 80
 
 	StartNewCtrConcurrencyLimit = 10
@@ -72,4 +72,5 @@ const (
 
 	// FaasnapSnapshotIdFile is the file path to load snapshot ids for Faasnap
 	FaasnapSnapshotIdFile = "/mnt/cxl-tmp/faasnap/snapshot/snapshots.json"
+	// FaasnapSnapshotIdFile = "/root/faasnap/snapshot/snapshots.json"
 )

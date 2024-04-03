@@ -56,7 +56,7 @@ func (fnm *FaasnapNetworkManager) createNetwork(ctx context.Context) (string, er
 		IfaceId:     "eth0",
 		GuestMac:    "AA:FC:00:00:00:01", // fixed MAC
 		GuestAddr:   "172.16.0.2",        // fixed IP
-		UniqueAddr:  fmt.Sprintf("192.168.0.%d", id+2),
+		UniqueAddr:  fmt.Sprintf("192.168.%d.%d", (id/252)+1, (id%252)+3),
 	}
 	_, err := fnm.client.DefaultApi.NetIfacesNamespacePut(ctx, ns, &swagger.DefaultApiNetIfacesNamespacePutOpts{
 		Body: optional.NewInterface(newInterface),

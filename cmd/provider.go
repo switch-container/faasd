@@ -107,6 +107,7 @@ func makeProviderCmd() *cobra.Command {
 		}
 		if startMethod == "faasnap" {
 			providerConfig.EnableFaasnap = true
+			providerConfig.StartConcurrency = 6
 		}
 		providerConfig.MemBound = memoryBound
 
@@ -179,7 +180,12 @@ func makeProviderCmd() *cobra.Command {
 		// start background task
 		if !noBgTask {
 			for _, t := range bgTask {
-				go t.Run(m)
+				go func(job provider.BackgroundTask) {
+					if err := job.Run(m); err != nil {
+						log.Err(err).Msg("background task raise unrecoverable error!")
+						panic(err)
+					}
+				}(t)
 			}
 		}
 
