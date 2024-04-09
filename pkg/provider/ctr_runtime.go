@@ -237,7 +237,21 @@ func (r CtrRuntime) startWork(workerCh <-chan StartNewCtrReq) {
 				if dur >= 100*time.Millisecond {
 					// we wait for at least 100 ms to get a new start request
 					// which means the system load is relatively low
-					stage -= 1
+					switch req.decision {
+					case REAP_START:
+						if dur >= 3*time.Second {
+							stage = 0
+						} else if dur >= 1*time.Second {
+							stage -= 2
+						} else {
+							stage -= 1
+						}
+						if stage < 0 {
+							stage = 0
+						}
+					case FAASNAP_START:
+						stage -= 1
+					}
 					lastActiveTime = time.Now()
 				} else {
 					// we get a new request within 200ms
@@ -245,8 +259,15 @@ func (r CtrRuntime) startWork(workerCh <-chan StartNewCtrReq) {
 					time.Sleep((1 << stage) * 100 * time.Millisecond)
 					lastActiveTime = time.Now()
 					stage += 1
-					if stage > 3 {
-						stage = 3
+					switch req.decision {
+					case REAP_START:
+						if stage > 5 {
+							stage = 5 // sleep 3.2s at most
+						}
+					case FAASNAP_START:
+						if stage > 3 {
+							stage = 3 // sleep 0.8s at most
+						}
 					}
 				}
 			}
@@ -599,7 +620,7 @@ func (r CtrRuntime) faasnapStartInstance(ctx context.Context, req StartNewCtrReq
 		if err := metrics.GetMetricLogger().Emit(pkg.InitNetworkOverhead, "faasnap", dur); err != nil {
 			crlogger.Err(err).Msg("log metric for create faasnap network failed")
 		}
-		crlogger.Debug().Dur("ovehead", dur).Msg("create faasnap network")
+		crlogger.Debug().Dur("ovehead", dur).Str("netns", netNs).Msg("create faasnap network")
 	}
 
 	snapshotId := req.SnapshotIds[0]

@@ -27,6 +27,8 @@ func (d DeployDecision) String() string {
 		return "switch"
 	case FAASNAP_START:
 		return "faasnap"
+  case REAP_START:
+		return "reap"
 	default:
 		return "invalid decision"
 	}

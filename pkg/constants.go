@@ -74,5 +74,6 @@ const (
 	FaasnapSnapshotIdFile = "/mnt/cxl-tmp/faasnap/snapshot/snapshots_faasnap.json"
 	// FaasnapSnapshotIdFile = "/root/faasnap/snapshot/snapshots_faasnap.json"
 	// ReapSnapshotIdFile is the file path to load snapshot ids for REAP
-	ReapSnapshotIdFile = "/mnt/cxl-tmp/faasnap/snapshot/snapshots_reap.json" 
+	ReapSnapshotIdFile = "/mnt/cxl-tmp/faasnap/snapshot/snapshots_reap.json"
+	// ReapSnapshotIdFile = "/root/faasnap/snapshot/snapshots_reap.json"
 )
