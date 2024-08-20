@@ -90,14 +90,21 @@ func cp(source, destFolder string) error {
 
 	}
 	defer file.Close()
+	srcInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
 
-	out, err := os.Create(path.Join(destFolder, source))
+	dstPath := path.Join(destFolder, source)
+	out, err := os.Create(dstPath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, file)
+	if _, err = io.Copy(out, file); err != nil {
+		return err
+	}
 
-	return err
+	return os.Chmod(dstPath, srcInfo.Mode())
 }
